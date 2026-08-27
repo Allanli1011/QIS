@@ -16,7 +16,8 @@ from qis.cli import _adjusted_price_matrix, _strategy_weights
 from qis.data.store import DataStore
 from qis.data.universe import Universe
 from qis.data.panel import coverage, to_returns
-from qis.portfolio.construction import (cap_binding_share, vol_target_factor,
+from qis.portfolio.construction import (cap_binding_share, cross_sectional_z,
+                                        factor_exposure, vol_target_factor,
                                         weight_band)
 
 STRATEGIES = ["trend", "xsmom", "carry"]
@@ -212,6 +213,17 @@ class QISService:
         mask = mask_full.reindex(index=prices.index, columns=prices.columns).fillna(False)
         # 只统计回测窗口内的上限绑定比例（权重是在完整历史上算的）
         cap_share = cap_binding_share(raw_f, max_lev, prices.index)
+        # 无意中背上的 carry 因子押注：trend/xsmom 都长期持正暴露，
+        # 而它们没有任何一处显式表达过对 carry 的看法
+        try:
+            from qis.cli import _annualized_carry, carry_horizons
+            cz = cross_sectional_z(
+                _annualized_carry(self.store, self.universe,
+                                  carry_horizons(self.store, self.universe))
+                .rolling(21, min_periods=10).mean())
+            carry_expo = float(factor_exposure(w, cz).reindex(prices.index).dropna().mean())
+        except Exception:
+            carry_expo = float("nan")
 
         cost = (cost_bps_by_name(self.universe.asset_classes(), self.settings["cost_bps"])
                 if with_cost else 0.0)
@@ -251,6 +263,7 @@ class QISService:
                        "max_leverage": max_lev},
             # 上限长期绑定 = 波动目标没生效，调 vol_target 不会有反应，前端要能看到
             "leverage_cap_share": _jsonable(cap_share),
+            "carry_factor_exposure": _jsonable(carry_expo),
             "roll_suspect": sorted(
                 n for n, d in self.roll_diagnostics().items()
                 if n in prices.columns and not d["plausible"]),

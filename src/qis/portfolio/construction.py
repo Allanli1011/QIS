@@ -82,6 +82,50 @@ def cap_binding_share(raw_factor: pd.Series, max_leverage: float,
     return float((raw > max_leverage).mean())
 
 
+def factor_exposure(weights: pd.DataFrame, factor: pd.DataFrame) -> pd.Series:
+    """
+    组合对某个截面因子的暴露：sum_i(w_i · z_i)，factor 需已做截面标准化。
+
+    用来发现**无意中背上的因子押注**。实测本池：trend 与 xsmom 都长期持有
+    正的 carry 暴露（均值 +0.20 / +0.17，77% / 71% 的交易日为正），
+    而这两个策略并没有任何一处显式表达过对 carry 的看法。
+    """
+    f = factor.reindex(index=weights.index, columns=weights.columns).fillna(0.0)
+    return (weights * f).sum(axis=1)
+
+
+def cross_sectional_z(values: pd.DataFrame) -> pd.DataFrame:
+    """逐日截面标准化（去均值 ÷ 截面标准差），使不同量纲的因子可比。"""
+    mu = values.mean(axis=1)
+    sd = values.std(axis=1).replace(0.0, np.nan)
+    return values.sub(mu, axis=0).div(sd, axis=0).fillna(0.0)
+
+
+def neutralize_factor(weights: pd.DataFrame, factor: pd.DataFrame,
+                      alpha: float = 1.0) -> pd.DataFrame:
+    """
+    把某个因子从权重里投影掉：w' = w − alpha·(w·z / z·z)·z。alpha 可做部分中性化。
+
+    **默认不启用。** 本池实测对 carry 因子做中性化的效果**依区间而定**，
+    不是稳健的改进：
+
+        区间          原始SR   中性化SR   原始回撤   中性化回撤
+        2010-2013     +0.60     +0.51    -12.0%    -14.1%   更差
+        2014-2017     +1.24     +1.25    -11.8%    -14.2%   更差
+        2018-2021     +0.12     +0.64    -19.8%    -14.4%   改善
+        2022-2026     +1.63     +1.33    -10.1%     -9.2%   略好
+
+    全样本看上去"最大回撤 −19.8% → −14.4%"，但那完全来自 2018-2021 一段
+    （含新冠）——最大回撤按定义由最坏的单次事件决定，容易被一次行情带偏。
+    唯一单调的效果是收益偏度改善（trend −0.41 → −0.17）。
+    要用请自行按自己的区间重新验证。
+    """
+    z = factor.reindex(index=weights.index, columns=weights.columns).fillna(0.0)
+    num = (weights * z).sum(axis=1)
+    den = (z * z).sum(axis=1).replace(0.0, np.nan)
+    return weights.sub(z.mul((alpha * num / den).fillna(0.0), axis=0))
+
+
 def weight_band(target: pd.DataFrame, thresh: float) -> pd.DataFrame:
     """
     无交易带（no-trade band）：目标权重与现行权重偏离 < thresh 的标的沿用旧权重。

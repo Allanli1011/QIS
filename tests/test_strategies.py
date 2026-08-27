@@ -372,3 +372,38 @@ def test_curve_carry_prefers_deferred_legs():
     with_front = curve_carry(legs, horizon, use_legs=(1, 2, 3, 4))["A"]
     no_front = curve_carry(legs, horizon, use_legs=(2, 3, 4))["A"]
     assert no_front.std() < with_front.std()
+
+
+def test_factor_exposure_and_neutralization():
+    """
+    因子暴露诊断：发现无意中背上的押注；中性化把它投影掉。
+    （本池实测 trend/xsmom 都长期持正 carry 暴露，而它们没有表达过对 carry 的看法。）
+    """
+    from qis.portfolio.construction import (cross_sectional_z, factor_exposure,
+                                            neutralize_factor)
+    idx = pd.date_range("2024-01-01", periods=5, freq="B")
+    cols = ["A", "B", "C", "D"]
+    # 因子：A 最高（3.0）、D 最低（0.0）
+    fac = pd.DataFrame({c: float(len(cols) - 1 - i) for i, c in enumerate(cols)}, index=idx)
+    z = cross_sectional_z(fac)
+    assert z.mean(axis=1).abs().max() < 1e-12          # 截面零均值
+    # 权重偏向高因子标的 → 正暴露
+    w = pd.DataFrame({"A": 0.4, "B": 0.3, "C": 0.2, "D": 0.1}, index=idx)
+    assert factor_exposure(w, z).mean() > 0
+    # 完全中性化后暴露归零
+    wn = neutralize_factor(w, z, alpha=1.0)
+    assert factor_exposure(wn, z).abs().max() < 1e-10
+    # 部分中性化按比例缩减暴露
+    half = factor_exposure(neutralize_factor(w, z, alpha=0.5), z).mean()
+    assert half == pytest.approx(factor_exposure(w, z).mean() * 0.5, rel=1e-9)
+
+
+def test_neutralization_preserves_unrelated_component():
+    """中性化只投影掉因子方向，与因子正交的持仓不应被改动。"""
+    from qis.portfolio.construction import cross_sectional_z, neutralize_factor
+    idx = pd.date_range("2024-01-01", periods=3, freq="B")
+    fac = pd.DataFrame({"A": 1.0, "B": 2.0, "C": 3.0}, index=idx)
+    z = cross_sectional_z(fac)
+    orth = pd.DataFrame({"A": 1.0, "B": -2.0, "C": 1.0}, index=idx)   # 与 z 正交
+    assert float((orth * z).sum(axis=1).abs().max()) < 1e-12
+    pd.testing.assert_frame_equal(neutralize_factor(orth, z), orth, atol=1e-12)
