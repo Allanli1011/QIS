@@ -13,15 +13,17 @@ from pathlib import Path
 
 import pandas as pd
 
-from qis.analytics.metrics import summary
+from qis.analytics.metrics import infer_ann_factor, summary
 from qis.analytics.report import tearsheet
 from qis.backtest.costs import cost_bps_by_name, load_settings
 from qis.backtest.engine import run_backtest
 from qis.data.lseg import get_source
-from qis.data.roll import adjusted_price_index, adjusted_returns, roll_starts, roll_window
+from qis.data.panel import clean_prices, liquid_mask, to_returns
+from qis.data.roll import adjust, adjusted_price_index, roll_diagnostics
 from qis.data.store import DataStore
 from qis.data.universe import Universe
-from qis.portfolio.construction import inverse_vol, normalize_gross, vol_target_scale, weight_band
+from qis.portfolio.construction import (cap_binding_share, inverse_vol, normalize_gross,
+                                        vol_target_factor, weight_band)
 from qis.portfolio.risk import ewma_vol
 from qis.strategy.carry import carry_signals
 from qis.strategy.trend import trend_weights
@@ -71,46 +73,32 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------- fetch-data
-def v1_ric(ric: str) -> str | None:
-    """c1 连续合约对应的 v1（成交量拼接）RIC；非 c1 返回 None。"""
-    return ric[:-2] + "v1" if ric.endswith("c1") else None
-
-
 def cmd_fetch_data(args: argparse.Namespace) -> int:
     u = Universe.from_yaml(args.universe)
     store = DataStore()
     rics = u.all_rics()
     print(f"标的池 {len(u)} 个，共 {len(rics)} 条 RIC（含 carry 腿），开始增量更新…")
     store.update_many(rics, start=args.start, end=args.end)
-    # 附带更新 v1 序列（成交量拼接，供换月窗口识别；无权限/无此序列的自动跳过）
-    v1s = [v for r in u.rics() if (v := v1_ric(r))]
-    print(f"尝试更新 {len(v1s)} 条 v1 序列…")
-    src = get_source()
-    ok = 0
-    for ric in v1s:
-        try:
-            df = store.update(ric, start=args.start, end=args.end, source=src)
-            ok += bool(len(df))
-        except Exception:
-            pass  # 无 v1 的标的静默跳过
-    print(f"完成（v1 可用 {ok}/{len(v1s)}）。")
+    print("完成。")
     return 0
 
 
 # ---------------------------------------------------------------- run
 def _adjusted_price_matrix(store: DataStore, u: Universe,
-                           with_roll_mask: bool = False):
+                           with_roll_mask: bool = False,
+                           with_diagnostics: bool = False):
     """
     换月调整后的价格矩阵（date × name）：
-    有远月腿的标的用换月窗口（优先 v1 背离法，回退成交量规则）修正收益再积成
-    价格指数；无腿标的（如 FX 现货）用原始收盘。
+    有远月腿的标的按持仓量跳升识别换月日、用 c1(T)/c2(T-1) 修正当日收益再积成
+    价格指数（见 qis.data.roll）；无腿标的（如 FX 现货）用原始收盘。
 
-    with_roll_mask=True 时额外返回换月交易日矩阵（date × name，bool），
-    供引擎计换月成本。
+    with_roll_mask=True   额外返回换月交易日矩阵（date × name，bool），供引擎计换月成本；
+    with_diagnostics=True 再额外返回换月识别体检字典（name → 方法/次数/是否合理）。
     """
     legs = u.carry_legs()
     cols: dict[str, pd.Series] = {}
     masks: dict[str, pd.Series] = {}
+    diag: dict[str, dict] = {}
     for inst in u.instruments:
         name, ric = inst["name"], inst["ric"]
         f = store.load(ric)
@@ -118,32 +106,48 @@ def _adjusted_price_matrix(store: DataStore, u: Universe,
             continue
         leg_ric = legs.get(name)
         d = store.load(leg_ric) if leg_ric else pd.DataFrame()
-        vr = v1_ric(ric)
-        v1 = store.load(vr) if vr else pd.DataFrame()
-        v1_close = v1["close"] if len(v1) and "close" in v1.columns else None
-        if len(d):
-            window = roll_window(
-                f["close"],
-                f.get("volume"), d.get("volume"),
-                v1_close=v1_close,
-            )
-            r = adjusted_returns(f["close"], d["close"], f.get("volume"), d.get("volume"),
-                                 v1_close=v1_close)
+        # 先洗掉非正价格与单日往返尖刺，否则一个错价就能在杠杆下打穿净值
+        fc = clean_prices(f["close"])
+        if len(d) and "close" in d.columns:
+            r, mask, method = adjust(fc, clean_prices(d["close"]), f.get("oi"), f.get("volume"))
             cols[name] = adjusted_price_index(r)
-            if with_roll_mask and window is not None:
-                masks[name] = roll_starts(window)
+            masks[name] = mask
+            if with_diagnostics:
+                diag[name] = roll_diagnostics(fc, f.get("oi"), f.get("volume"))
         else:
-            cols[name] = f["close"]
+            cols[name] = fc
     prices = pd.DataFrame(cols).sort_index()
-    if not with_roll_mask:
-        return prices
-    roll_mask = pd.DataFrame(masks, index=prices.index).reindex(columns=prices.columns).fillna(False)
-    return prices, roll_mask
-    return pd.DataFrame(cols).sort_index()
+    out = [prices]
+    if with_roll_mask:
+        # 逐列赋值而不是 reindex+fillna：后者在空/缺列时会落到 object dtype，
+        # 触发 pandas 的 downcasting FutureWarning
+        rm = pd.DataFrame(False, index=prices.index, columns=prices.columns)
+        for name, m in masks.items():
+            if name in rm.columns:
+                rm[name] = m.reindex(prices.index, fill_value=False).astype(bool)
+        out.append(rm)
+    if with_diagnostics:
+        out.append(diag)
+    return out[0] if len(out) == 1 else tuple(out)
 
 
 def _strategy_weights(name: str, prices: pd.DataFrame, u: Universe,
-                      store: DataStore, gross: float) -> pd.DataFrame:
+                      store: DataStore, gross: float,
+                      raw_quotes: pd.DataFrame | None = None) -> pd.DataFrame:
+    """
+    策略权重，并按报价流动性掩码剔除断档期的标的。
+
+    raw_quotes 是"哪天有真实报价"的依据（缺省时退回 prices 自身）——
+    prices 是已经前值填充过的价格指数，看不出哪些是假期填出来的。
+    """
+    w = _raw_strategy_weights(name, prices, u, store, gross)
+    liq = liquid_mask(raw_quotes if raw_quotes is not None else prices)
+    liq = liq.reindex(index=w.index, columns=w.columns).fillna(False)
+    return normalize_gross(w.where(liq, 0.0), gross)
+
+
+def _raw_strategy_weights(name: str, prices: pd.DataFrame, u: Universe,
+                          store: DataStore, gross: float) -> pd.DataFrame:
     if name == "trend":
         return trend_weights(prices, gross=gross)
     if name == "xsmom":
@@ -152,11 +156,14 @@ def _strategy_weights(name: str, prices: pd.DataFrame, u: Universe,
         # 信号用原始近/远月价差（水平关系），波动估计用调整后收益
         legs = u.carry_legs()
         leg_rics = {v: k for k, v in legs.items()}  # leg ric -> name
-        raw_front = store.load_close_matrix(u.rics()).rename(columns=u.ric_to_name())
-        deferred = store.load_close_matrix(list(leg_rics)).rename(columns=leg_rics)
+        raw_front = clean_prices(store.load_close_matrix(u.rics()).rename(columns=u.ric_to_name()))
+        deferred = clean_prices(store.load_close_matrix(list(leg_rics)).rename(columns=leg_rics))
         sig = carry_signals(raw_front, deferred)  # 默认时序模式
-        vol = ewma_vol(prices.pct_change(fill_method=None))
-        w = inverse_vol(sig.reindex(columns=prices.columns, fill_value=0.0), vol, gross=gross)
+        vol = ewma_vol(to_returns(prices))
+        # 必须连 index 一起对齐：raw_front 是未切窗口的全历史，只对齐列会让权重
+        # 带着回测窗口之前的几千行进入后续的波动目标缩放，污染 EWMA 预热。
+        sig = sig.reindex(index=prices.index, columns=prices.columns).fillna(0.0)
+        w = inverse_vol(sig, vol, gross=gross)
         no_leg = [c for c in prices.columns if c not in deferred.columns]
         if no_leg:
             w[no_leg] = 0.0
@@ -174,21 +181,36 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     u = Universe.from_yaml(args.universe)
     store = DataStore()
-    front, roll_mask = _adjusted_price_matrix(store, u, with_roll_mask=True)
-    if front.empty:
+    full, roll_mask_full, diag = _adjusted_price_matrix(
+        store, u, with_roll_mask=True, with_diagnostics=True)
+    if full.empty:
         print("本地缓存为空，请先运行：qis fetch-data")
         return 1
-    roll_mask = roll_mask.loc[start:end]
-    front = front.loc[start:end].dropna(how="all")
 
-    # 策略权重 → 波动目标缩放 → 无交易带
-    w = _strategy_weights(args.strategy, front, u, store, args.gross)
-    rets = front.pct_change(fill_method=None)
-    w = vol_target_scale(w, rets, target=vol_target, span=bt["vol_lookback"],
-                         ann_factor=bt["ann_factor"])
+    # 信号、波动目标、无交易带全部在**完整历史**上计算，最后才切到回测窗口。
+    # 先切窗口会让 start 之后的第一年被 lookback 预热吃掉
+    # （trend 需 252 日，从 2010 起的回测里 2010 全年空仓）。
+    w_raw = _strategy_weights(args.strategy, full, u, store, args.gross)
     band = args.band if args.band is not None else bt.get("rebal_band", 0.0)
+    rets_full = to_returns(full)
+    max_lev = float(bt.get("max_leverage", 3.0))
+    af = infer_ann_factor(rets_full.iloc[:, 0] if full.shape[1] else pd.Series(dtype=float),
+                          bt["ann_factor"])
+    scale_f, raw_f = vol_target_factor(w_raw, rets_full, vol_target, bt["vol_lookback"],
+                                       af, max_lev)
+    w = w_raw.mul(scale_f, axis=0).where(scale_f.notna(), w_raw)
+    # 无交易带作用在杠杆之后的实际持仓上（与历史标定一致）。
+    # 注意：阈值是绝对权重单位，会随杠杆水平改变其相对强度——
+    # 若把 max_leverage 调高到上限不再绑定，带会开始阻挡波动目标的降杠杆动作
+    # （实测 max_leverage=10 时 trend 波动从 12% 被顶到 22%）。改杠杆时要一并重标定。
     if band > 0:
         w = weight_band(w, band)
+
+    front = full.loc[start:end].dropna(how="all")
+    w = w.reindex(index=front.index, columns=front.columns).fillna(0.0)
+    roll_mask = roll_mask_full.reindex(index=front.index, columns=front.columns).fillna(False)
+    # 只统计回测窗口内的上限绑定比例（权重是在完整历史上算的）
+    cap_share = cap_binding_share(raw_f, max_lev, front.index)
 
     # 成本
     if args.no_cost:
@@ -197,7 +219,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         cost = cost_bps_by_name(u.asset_classes(), settings["cost_bps"])
 
     res = run_backtest(front, w, cost_bps=cost, roll_mask=roll_mask)
-    stats = summary(res.net, res.turnover, bt["ann_factor"])
+    stats = summary(res.net, res.turnover)
 
     tag = f"_{args.tag}" if args.tag else ""
     out_dir = Path(args.out)
@@ -222,11 +244,20 @@ def cmd_run(args: argparse.Namespace) -> int:
             print(f"  {k:<14} {int(v):>10d}")
         else:
             print(f"  {k:<14} {v:>10.2f}")
+    if cap_share == cap_share and cap_share > 0.5:
+        print(f"\n  ! 杠杆上限({max_lev:g}×)在 {cap_share:.0%} 的交易日绑定，"
+              f"波动目标 {vol_target:.0%} 实际够不着——此时调 --vol-target 不会有反应")
+
     print(f"\n收益序列: {csv_path}\ntearsheet: {png_path}")
 
+    suspect = {n: d for n, d in diag.items() if not d["plausible"]}
+    if suspect:
+        print(f"\n== 换月识别存疑 {len(suspect)}/{len(diag)} 个标的（其收益未被可靠换月调整）==")
+        for n, d in sorted(suspect.items(), key=lambda kv: -kv[1]["per_year"])[:10]:
+            print(f"  {n:<13}方法={d['method']:<8}{d['per_year']:>6.1f} 次/年")
+
     if args.attrib:
-        rets = front.pct_change(fill_method=None)
-        contrib = (res.weights * rets.fillna(0.0)).mean() * bt["ann_factor"]
+        contrib = (res.weights * res.returns).mean() * stats["ann_factor"]
         contrib = contrib.sort_values()
         print("\n== 分标的年化贡献（首尾各 5） ==")
         for name in list(contrib.index[:5]) + list(contrib.index[-5:]):

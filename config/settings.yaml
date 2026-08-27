@@ -5,7 +5,17 @@ backtest:
   vol_target: 0.10        # 组合年化波动目标
   vol_lookback: 40        # EWMA 波动估计 span（交易日）
   rebal_band: 0.03        # 无交易带：偏离 <3% 不调仓（降换手、避免日频微调损耗）
-  ann_factor: 252         # 年化因子
+  ann_factor: 252         # 年化因子回退值（实际按数据索引推断，见 metrics.infer_ann_factor）
+  max_leverage: 3.0       # 波动目标的杠杆上限（毛敞口倍数）。
+                          # 注意：本池 ~98 个标的逆波动加权、gross=1 的未杠杆账本
+                          # 年化波动仅 ~1.3%（trend），打到 10% 目标需约 7.7×，
+                          # EWMA(40) 在平静期的估计更低、要 20×+ —— 也就是说
+                          # 上限在绝大多数交易日都绑定，vol_target 参数实际不起作用。
+                          # 这是策略层面的风险预算问题，不是调大上限就能解决的：
+                          # 组合收益被少数尾部日主导（VIX +112%、TTF +46%），
+                          # 实测把上限放到 10 会让 xsmom/carry 直接把净值打穿。
+                          # 回测与 API 都会报告 leverage_cap_share，绑定比例高
+                          # 就说明"波动目标"名存实亡，此时应调 gross 或改风险模型。
 
 # 单边交易成本（bps，按资产类别；default 兜底）
 cost_bps:

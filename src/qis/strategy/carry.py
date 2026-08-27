@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from qis.data.panel import ffill_prices, to_returns
 from qis.portfolio.construction import inverse_vol, normalize_gross
 from qis.portfolio.risk import ewma_vol
 
@@ -23,7 +24,8 @@ from qis.portfolio.risk import ewma_vol
 def carry_raw(front: pd.DataFrame, deferred: pd.DataFrame) -> pd.DataFrame:
     """原始 carry = front/deferred - 1（无腿的标的列保持 NaN）。"""
     common = [c for c in front.columns if c in deferred.columns]
-    return front[common] / deferred[common] - 1.0
+    # 并集日历下两条腿的假期未必同一天，先各自前值填充，避免价差被打成 NaN
+    return ffill_prices(front[common]) / ffill_prices(deferred[common]) - 1.0
 
 
 def carry_signals(
@@ -79,7 +81,7 @@ def carry_weights(
     gross: float = 1.0,
 ) -> pd.DataFrame:
     sig = carry_signals(front, deferred, groups=groups, mode=mode, lookback=lookback)
-    vol = ewma_vol(front.pct_change(fill_method=None), span=vol_span)
+    vol = ewma_vol(to_returns(front), span=vol_span)
     w = inverse_vol(sig, vol, gross=gross)
     # 无 carry 腿的标的权重保持 0
     no_leg = [c for c in front.columns if c not in deferred.columns]

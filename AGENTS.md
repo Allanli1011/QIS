@@ -18,6 +18,11 @@ QIS 日频策略研究回测平台。uv 管理，Python 3.13，src layout（`src
 
 - 语言与注释：代码注释/docstring 用中文（同现有风格）。
 - 防前视是铁律：权重 t 日收盘生成、shift(1) 后生效；任何新逻辑只允许用 ≤t 的数据。
+- **价格→收益一律走 `qis.data.panel.to_returns`**，不要直接 `prices.pct_change()`：
+  价格矩阵是多市场交易日历的并集，标的假期是 NaN 洞，直接 pct_change 会把
+  跨假期的涨跌整段丢掉（实测 98 个标的里 60 个累计收益偏差 >5pp）。
+- 信号/波动目标/无交易带都在**完整历史**上算，`start` 只在最后切片时生效，
+  否则回测窗口的第一年会被 lookback 预热吃掉。
 - 策略 = 纯函数 `prices -> weights`，输出前 `normalize_gross`；组合级缩放走 `portfolio/construction.py`。
 - 新标的加在 `config/universe.yaml`；期货标的尽量配 `carry_leg`（远月 RIC），
   供换月调整与 carry 策略使用。
@@ -28,8 +33,12 @@ QIS 日频策略研究回测平台。uv 管理，Python 3.13，src layout（`src
 
 - `lseg.data` 的 default session 是进程单例，复用 `qis.data.lseg.get_source()`。
 - 不同 RIC 收盘列名不同，一律走 `LSEGSource.normalize()` 归一化。
-- 连续合约未复权：换月窗口优先用 `v1` 序列背离法（LSEG 成交量拼接点），
-  无 v1 回退成交量规则；窗口内收益取远月，见 `qis.data.roll`。
-- 换月成本由引擎 `roll_mask` 计（|持仓|×2×单边费率）；v1 序列随 `qis fetch-data` 更新。
+- 连续合约未复权：换月日用**持仓量（oi）跳升**识别，无 oi 回退成交量跳升；
+  换月日收益取 `c1(T)/c2(T-1) − 1`（同一张合约），见 `qis.data.roll`。
+  识别不出或频率离谱的标的由 `roll_diagnostics` 显式报出，不要静默吞掉。
+- 换月成本由引擎 `roll_mask` 计（|持仓|×2×单边费率）。
+- 原始行情有坏价（错价、单位错误、负结算），入回测前过 `qis.data.panel.clean_prices`。
+- `scripts/expand_universe.py` 以 `config/universe.yaml` 已有条目为准，
+  脚本里的 CANDIDATES 只用于新增；改标的 RIC 请直接改 yaml。
 - API 出 JSON 前必须过 `qis.web.service._jsonable`：pandas pivot 等操作可能产出
   `pd.NA`（nullable dtype），直接序列化会变成 `{}` 污染前端。

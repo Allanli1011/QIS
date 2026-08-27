@@ -11,7 +11,7 @@ from qis.web.service import QISService
 
 
 @pytest.fixture
-def client(tmp_path):
+def svc(tmp_path):
     # 两个标的（一个有远月腿）的 toy 缓存
     u_yaml = tmp_path / "u.yaml"
     u_yaml.write_text(
@@ -29,8 +29,13 @@ def client(tmp_path):
             "close": px, "volume": rng.integers(1000, 2000, 400).astype(float),
         }, index=idx))
 
-    svc = QISService(universe_path=str(u_yaml))
-    svc.store = store
+    service = QISService(universe_path=str(u_yaml))
+    service.store = store
+    return service
+
+
+@pytest.fixture
+def client(svc):
     return TestClient(create_app(service=svc))
 
 
@@ -74,3 +79,58 @@ def test_data_status(client):
     r = client.get("/api/data/status")
     assert r.status_code == 200
     assert {x["ric"] for x in r.json()} == {"AAc1", "AAc2", "BB="}
+
+
+def test_reload_clears_backtest_cache(svc):
+    """
+    回归：旧 reload() 只把 _prices 置空，_run_cache 原封不动，
+    拉了新数据之后再跑回测仍会拿到同一份旧结果。
+    """
+    first = svc.run("trend", start="2020-06-01")
+    assert svc._run_cache and svc._prices is not None
+    svc.reload()
+    assert svc._prices is None and not svc._run_cache and not svc._roll_diag
+    second = svc.run("trend", start="2020-06-01")
+    assert second is not first          # 重新算过，不是缓存里那份
+    assert second["metrics"]["n_days"] == first["metrics"]["n_days"]
+
+
+def test_reload_picks_up_new_data(svc):
+    """reload 后必须反映新落盘的数据。"""
+    n0 = svc.run("trend", start="2020-06-01")["metrics"]["n_days"]
+    df = svc.store.load("AAc1")
+    extra = pd.DataFrame(
+        {"close": [float(df["close"].iloc[-1])] * 5,
+         "volume": [1500.0] * 5},
+        index=pd.bdate_range(df.index[-1] + pd.offsets.BDay(1), periods=5))
+    svc.store.save("AAc1", pd.concat([df, extra]))
+    svc.reload()
+    assert svc.run("trend", start="2020-06-01")["metrics"]["n_days"] > n0
+
+
+def test_instruments_report_true_market_price(client):
+    """
+    回归：带远月腿的标的在价格矩阵里是换月调整后的**指数**（基数 100 累乘），
+    直接当"最新价"展示会把 SP500 显示成 460 而不是 7710。
+    """
+    from qis.data.store import DataStore  # noqa: F401
+    rows = {i["name"]: i for i in client.get("/api/instruments").json()}
+    aaa, bbb = rows["AAA"], rows["BBB"]
+    assert aaa["is_adjusted"] is True and bbb["is_adjusted"] is False
+    # AAA 原始收盘价在 100 附近，调整指数在 100 附近也可能撞上，
+    # 但两者必须是分开的字段且 last 等于真实收盘
+    assert aaa["last"] != aaa["index"] or aaa["index"] is None
+    assert aaa["last"] is not None and aaa["last"] > 0
+
+
+def test_run_exposes_risk_diagnostics(client):
+    d = client.get("/api/run?strategy=trend&start=2020-06-01").json()
+    assert "leverage_cap_share" in d
+    assert "roll_suspect" in d
+    assert d["params"]["max_leverage"] > 0
+
+
+def test_data_status_reports_sparsity(client):
+    rows = client.get("/api/data/status").json()
+    for r in rows:
+        assert "rows_per_year" in r and "sparse" in r

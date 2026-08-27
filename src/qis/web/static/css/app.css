@@ -333,3 +333,19 @@ tbody tr:last-child td { border-bottom: 0; }
 ::-webkit-scrollbar-thumb { background: #222; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-thumb:hover { background: var(--amber); }
 ::-webkit-scrollbar-track { background: transparent; }
+
+
+/* ---- 回测警示条（波动目标失效 / 换月识别存疑）---- */
+#run-warnings { display: flex; flex-direction: column; gap: 6px; margin: 8px 0 0; }
+.warn-bar {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 7px 11px; border-radius: 3px; font-size: 11.5px; line-height: 1.5;
+  font-family: ui-monospace, Menlo, monospace;
+  background: rgba(247, 166, 0, .07); border-left: 2px solid var(--amber, #f7a600);
+  color: #d8cbb0;
+}
+.warn-bar b { color: var(--amber, #f7a600); font-weight: 600; }
+.warn-bar.info { background: rgba(41, 182, 246, .06); border-left-color: #29b6f6; color: #bfd4e0; }
+.warn-bar.info b { color: #29b6f6; }
+/* 标的池：换月调整过的价格指数与真实行情价的区分标记 */
+.adj-flag { color: #5c5c5c; font-size: 9.5px; margin-left: 4px; }

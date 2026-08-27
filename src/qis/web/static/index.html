@@ -79,6 +79,7 @@
         </div>
       </div>
       <div class="metric-strip" id="metric-strip"></div>
+      <div id="run-warnings"></div>
       <div class="panel">
         <div class="panel-title" id="equity-title">净值曲线</div>
         <div class="panel-chart tall" id="ch-equity"></div>
@@ -103,8 +104,8 @@
         </div>
         <div class="table-wrap"><table id="u-table">
           <thead><tr>
-            <th>名称</th><th>RIC</th><th>类别</th><th class="num">最新</th>
-            <th class="num">1日</th><th class="num">1月</th><th class="num">1年</th><th>近一年</th>
+            <th>名称</th><th>RIC</th><th>类别</th><th class="num">最新价</th>
+            <th class="num">1日</th><th class="num">1月</th><th class="num">1年</th><th>近一年（换月调整）</th>
           </tr></thead>
           <tbody id="u-tbody"></tbody>
         </table></div>
@@ -116,7 +117,7 @@
       <div class="panel">
         <div class="panel-title">数据状态 <span class="panel-sub">本地 parquet 缓存 · qis fetch-data 增量更新</span></div>
         <div class="table-wrap"><table id="d-table">
-          <thead><tr><th>RIC</th><th class="num">行数</th><th>起始</th><th>最新</th><th>新鲜度</th></tr></thead>
+          <thead><tr><th>RIC</th><th class="num">行数</th><th class="num">行/年</th><th>起始</th><th>最新</th><th>新鲜度</th></tr></thead>
           <tbody id="d-tbody"></tbody>
         </table></div>
       </div>

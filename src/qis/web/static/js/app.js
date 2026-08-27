@@ -39,6 +39,8 @@ const fmtPct2 = (v) => v == null ? "—" : (v >= 0 ? "+" : "") + (v * 100).toFix
 const fmtNum = (v, d = 2) => v == null ? "—" : Number(v).toFixed(d);
 const fmtSign = (v, d = 2) => v == null ? "—" : (v >= 0 ? "+" : "") + Number(v).toFixed(d);
 const posNeg = (v) => v == null ? "" : v > 0 ? "pos" : v < 0 ? "neg" : "";
+/* 行情价：精度按价格量级定，null 安全 */
+const fmtPx = (v) => v == null ? "—" : Math.abs(v) < 20 ? fmtNum(v, 4) : fmtNum(v, 2);
 
 /* ---------- SVG 迷你走势 ---------- */
 function sparkline(points, { w = 130, h = 30, color = C.amber } = {}) {
@@ -117,7 +119,7 @@ async function initTicker() {
     const inst = await api("/api/instruments");
     const items = inst.filter(i => i.chg_1d != null).map(i => {
       const cls = i.chg_1d >= 0 ? "up" : "dn";
-      const px = i.last < 20 ? fmtNum(i.last, 4) : fmtNum(i.last, 2);
+      const px = fmtPx(i.last);
       return `<span class="tick-item"><b>${i.name}</b>${px} <span class="${cls}">${fmtPct2(i.chg_1d)}</span></span>`;
     });
     const html = items.join(`<span class="tick-sep">▪</span>`);
@@ -154,7 +156,7 @@ async function initOverview() {
 
   const stats = [
     ["标的数", ov.n_instruments, "覆盖 " + ov.asset_classes.length + " 个资产类别"],
-    ["RIC 数", ov.n_rics, "含 carry 远月腿与 v1 序列"],
+    ["RIC 数", ov.n_rics, "含 carry 远月腿"],
     ["资产类别", ov.asset_classes.length, ov.asset_classes.map(c => CLASS_LABELS[c] || c).join(" / ")],
     ["策略模板", ov.strategies.length, ov.strategies.map(s => STRATEGY_NAMES[s]).join(" / ")],
   ];
@@ -311,6 +313,23 @@ function renderRun(d) {
     `<div class="metric"><div class="metric-label">${l}</div>
      <div class="metric-value ${cls}">${v}</div></div>`).join("");
 
+  // 静默失效的两件事必须显式提示：杠杆上限长期绑定 = 波动目标没生效；
+  // 换月识别不可信 = 这些标的的收益没被正确调整。
+  const warns = [];
+  const cap = d.leverage_cap_share;
+  if (cap != null && cap > 0.5) {
+    warns.push(`<div class="warn-bar"><b>波动目标未生效</b>
+      杠杆上限 ${fmtNum(d.params.max_leverage, 0)}× 在 <b>${fmtPct(cap, 0)}</b> 的交易日绑定，
+      目标 ${fmtPct(d.params.vol_target, 0)} 实际够不着（实现波动 ${fmtPct(m.ann_vol)}）。
+      此时调"波动目标"滑块不会有反应——需要改 gross 或风险模型。</div>`);
+  }
+  if (d.roll_suspect && d.roll_suspect.length) {
+    warns.push(`<div class="warn-bar info"><b>换月识别存疑 ${d.roll_suspect.length} 个标的</b>
+      ${d.roll_suspect.join("、")}
+      —— 持仓量/成交量信号识别不出合理的换月频率，这些标的的收益未被可靠的换月调整。</div>`);
+  }
+  $("#run-warnings").innerHTML = warns.join("");
+
   const eqOpt = lineOption(null, [
     { name: "费后", points: d.equity, color: C.amber },
     { name: "费前", points: d.gross_equity, color: C.faint },
@@ -433,7 +452,7 @@ async function renderUniverseTable() {
       <td class="name-cell" style="color:var(--amber)">${i.name}</td>
       <td class="ric-cell">${i.ric}</td>
       <td><span class="pill class">${i.class_label}</span></td>
-      <td class="num">${fmtNum(i.last, i.last < 20 ? 4 : 2)}</td>
+      <td class="num">${fmtPx(i.last)}${i.is_adjusted ? '<span class="adj-flag" title="涨跌幅与走势用换月调整后的价格指数，此处显示的是真实行情收盘价">adj</span>' : ""}</td>
       <td class="num">${pillFor(i.chg_1d)}</td>
       <td class="num">${pillFor(i.chg_1m)}</td>
       <td class="num">${pillFor(i.chg_1y)}</td>
@@ -478,8 +497,10 @@ async function initData() {
     // 最新数据距今 >4 天（覆盖周末/假期）才算待更新
     const ageDays = r.last ? (now - Date.parse(r.last)) / 864e5 : Infinity;
     const stale = ageDays > 4;
+    const rpy = r.rows_per_year == null ? "—" : fmtNum(r.rows_per_year, 0);
     return `<tr><td class="name-cell" style="color:var(--amber)">${r.ric}</td>
       <td class="num">${r.rows.toLocaleString()}</td>
+      <td class="num ${r.sparse ? "neg" : ""}" title="${r.sparse ? "明显低于正常日线的 ~250 行/年，这条序列本身缺数" : ""}">${rpy}</td>
       <td class="num">${r.first || "—"}</td><td class="num">${r.last || "—"}</td>
       <td><span class="pill ${stale ? "stale" : "ok"}">${stale ? "待更新" : "最新"}</span></td></tr>`;
   }).join("");

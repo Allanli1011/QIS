@@ -9,6 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from qis.data.panel import ffill_prices, to_returns
 from qis.portfolio.construction import inverse_vol
 from qis.portfolio.risk import ewma_vol
 
@@ -18,10 +19,16 @@ def trend_signals(
     lookbacks: tuple[int, ...] = (21, 63, 126, 252),
     smooth: int = 5,
 ) -> pd.DataFrame:
-    """每个窗口取价格涨跌符号，等权平均后做 smooth 日均值（降换手），落在 [-1, 1]。"""
+    """
+    每个窗口取价格涨跌符号，等权平均后做 smooth 日均值（降换手），落在 [-1, 1]。
+
+    先在存续区间内前值填充：并集日历下标的自身的假期是 NaN 洞，
+    不填充会让 prices/prices.shift(lb) 在洞前后整段变 NaN、信号被打成 0。
+    """
+    px = ffill_prices(prices)
     sig = None
     for lb in lookbacks:
-        s = np.sign(prices / prices.shift(lb) - 1.0)
+        s = np.sign(px / px.shift(lb) - 1.0)
         sig = s if sig is None else sig + s
     sig = sig / len(lookbacks)
     if smooth > 1:
@@ -38,5 +45,5 @@ def trend_weights(
 ) -> pd.DataFrame:
     """趋势信号 ÷ EWMA 波动，归一化到 sum|w| = gross。"""
     sig = trend_signals(prices, lookbacks, smooth=smooth)
-    vol = ewma_vol(prices.pct_change(fill_method=None), span=vol_span)
+    vol = ewma_vol(to_returns(prices), span=vol_span)
     return inverse_vol(sig, vol, gross=gross)

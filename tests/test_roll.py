@@ -1,81 +1,137 @@
 # -*- coding: utf-8 -*-
-"""换月调整测试。"""
+"""换月识别与调整收益测试。"""
 import numpy as np
 import pandas as pd
 import pytest
 
 from qis.data.roll import (
-    adjusted_price_index, adjusted_returns, roll_starts,
-    v1_roll_window, volume_roll_window,
+    adjust,
+    adjusted_price_index,
+    adjusted_returns,
+    oi_roll_days,
+    roll_days,
+    roll_diagnostics,
+    volume_roll_days,
 )
 
 
-def _s(idx, vals):
-    return pd.Series(vals, index=idx, dtype=float)
+def _idx(n):
+    return pd.date_range("2024-01-01", periods=n, freq="B")
 
 
-def test_volume_roll_window():
-    idx = pd.date_range("2024-01-01", periods=5, freq="D")
-    fv = _s(idx, [100, 100, 90, 50, 40])
-    dv = _s(idx, [50, 50, 95, 200, 210])
-    roll = volume_roll_window(fv, dv)
-    assert roll.tolist() == [False, False, True, True, True]
+def _oi_series(n, roll_at, low=1_000.0, high=50_000.0):
+    """持仓量：换月日跳升到新合约的量级，之后逐日萎缩。"""
+    idx = _idx(n)
+    vals = []
+    cur = high
+    for i in range(n):
+        if i in roll_at:
+            cur = high
+        else:
+            cur = cur * 0.97 if i else cur
+        vals.append(cur if i not in roll_at else high)
+    # 换月前一天压到很低，制造跳升
+    s = pd.Series(vals, index=idx)
+    for i in roll_at:
+        if i > 0:
+            s.iloc[i - 1] = low
+    return s
 
 
-def test_v1_roll_window():
-    idx = pd.date_range("2024-01-01", periods=5, freq="D")
-    # day3 起 v1 已切新合约（收益与 c1 不同），c1 尚未切
-    c1 = _s(idx, [100, 101, 102, 103, 104])
-    v1 = _s(idx, [100, 101, 102, 103.5, 104.2])
-    w = v1_roll_window(c1, v1, tol=1e-4)
-    assert w.tolist() == [False, False, False, True, True]
+def test_oi_jump_marks_roll_day():
+    n = 60
+    oi = _oi_series(n, roll_at={20, 45})
+    mask = oi_roll_days(oi)
+    assert list(np.flatnonzero(mask.to_numpy())) == [20, 45]
 
 
-def test_roll_starts_marks_window_beginnings():
-    idx = pd.date_range("2024-01-01", periods=7, freq="D")
-    window = pd.Series([False, True, True, False, False, True, False], index=idx)
-    starts = roll_starts(window)
-    assert starts.tolist() == [False, True, False, False, False, True, False]
+def test_min_gap_collapses_adjacent_hits():
+    """一次换月的连续跳升只算一天。"""
+    idx = _idx(30)
+    oi = pd.Series(1000.0, index=idx)
+    oi.iloc[10] = 50_000.0
+    oi.iloc[11] = 3_000_000.0   # 紧邻的第二次跳升属于同一次换月
+    mask = oi_roll_days(oi, min_gap=10)
+    assert int(mask.sum()) == 1
+    assert mask.to_numpy()[10]
 
 
-def test_roll_day_uses_deferred_return():
-    idx = pd.date_range("2024-01-01", periods=4, freq="D")
-    # day2 换月：近月 100→50（拼接 gap），远月真实波动 60→61.2（+2%）
-    fc = _s(idx, [100, 100, 50, 51])
-    dc = _s(idx, [60, 60, 61.2, 62.424])
-    fv = _s(idx, [100, 100, 10, 10])
-    dv = _s(idx, [50, 50, 200, 200])
-    r = adjusted_returns(fc, dc, fv, dv)
-    assert r.iloc[1] == pytest.approx(0.0)          # 正常日：近月收益
-    assert r.iloc[2] == pytest.approx(0.02)         # 换月日：远月收益（无 -50% 幻影）
-    assert r.iloc[3] == pytest.approx(0.02)
+def test_volume_used_when_oi_missing():
+    n = 60
+    vol = _oi_series(n, roll_at={30})
+    oi = pd.Series(np.nan, index=_idx(n))
+    mask, method = roll_days(pd.Series(100.0, index=_idx(n)), oi, vol)
+    assert method == "volume"
+    assert int(mask.sum()) == 1
 
 
-def test_v1_takes_priority_over_volume():
-    idx = pd.date_range("2024-01-01", periods=4, freq="D")
-    fc = _s(idx, [100, 100, 50, 51])
-    dc = _s(idx, [60, 60, 61.2, 62.424])
-    # 成交量规则说 day3 换月，但 v1 说 day2 已切 → 用 v1
-    fv = _s(idx, [100, 100, 100, 10])
-    dv = _s(idx, [50, 50, 50, 200])
-    v1 = _s(idx, [100, 100, 50.5, 51.3])
-    r = adjusted_returns(fc, dc, fv, dv, v1_close=v1)
-    assert r.iloc[2] == pytest.approx(0.02)  # day2 用远月收益
-    assert r.iloc[3] == pytest.approx(0.02)  # day3 v1/c1 仍背离（c1 未切），仍用远月
+def test_no_signal_reports_none_instead_of_guessing():
+    """识别不出来要显式返回 none，而不是悄悄用一串错误收益。"""
+    n = 40
+    flat = pd.Series(1000.0, index=_idx(n))
+    mask, method = roll_days(pd.Series(100.0, index=_idx(n)), flat, flat)
+    assert method == "none"
+    assert not mask.any()
+    d = roll_diagnostics(pd.Series(100.0, index=_idx(n)), flat, flat)
+    assert d["method"] == "none" and d["plausible"] is False
 
 
-def test_no_volume_falls_back_to_plain_returns():
-    idx = pd.date_range("2024-01-01", periods=3, freq="D")
-    fc = _s(idx, [100, 102, 101])
-    r = adjusted_returns(fc, fc)  # 无 volume、无 v1
-    expected = fc.pct_change(fill_method=None)
-    pd.testing.assert_series_equal(r, expected)
+def test_roll_day_return_uses_front_over_lagged_deferred():
+    """换月日收益 = c1(T)/c2(T-1) − 1（同一张合约），不是 c1 或 c2 的自身收益。"""
+    n = 30
+    idx = _idx(n)
+    # 平日 c1、c2 各自平移；第 15 天 c1 跳到 c2 的合约上（contango，价格跳升）
+    c1 = pd.Series(100.0, index=idx)
+    c2 = pd.Series(105.0, index=idx)
+    c1.iloc[15:] = 105.5      # 换月后 c1 指向原 c2 合约，且当天涨了 0.5
+    c2.iloc[15:] = 110.0
+    oi = _oi_series(n, roll_at={15})
+
+    r, mask, method = adjust(c1, c2, front_oi=oi)
+    assert method == "oi" and bool(mask.iloc[15])
+    # naive 会记成 +5.5%（幻影），正确值是 105.5/105 − 1
+    assert r.iloc[15] == pytest.approx(105.5 / 105.0 - 1.0, rel=1e-12)
+    assert r.iloc[15] < 0.01
+    # 非换月日仍取 c1 自身收益
+    assert r.iloc[16] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_falls_back_to_naive_when_deferred_missing():
+    n = 30
+    idx = _idx(n)
+    c1 = pd.Series(100.0, index=idx); c1.iloc[15:] = 105.0
+    c2 = pd.Series(np.nan, index=idx)
+    oi = _oi_series(n, roll_at={15})
+    r = adjusted_returns(c1, c2, front_oi=oi)
+    assert r.iloc[15] == pytest.approx(0.05, rel=1e-12)   # 无从修正就保持原样，不造 NaN
+
+
+def test_diagnostics_flags_implausible_frequency():
+    """每年换几十次换月是不可信的，必须报出来。"""
+    n = 500
+    idx = _idx(n)
+    oi = pd.Series(1000.0, index=idx)
+    oi.iloc[::12] = 500_000.0          # 每 12 天一次 → 约 21 次/年
+    d = roll_diagnostics(pd.Series(100.0, index=idx), oi, None)
+    assert d["method"] == "oi"
+    assert d["per_year"] > 14
+    assert d["plausible"] is False
 
 
 def test_adjusted_price_index():
-    idx = pd.date_range("2024-01-01", periods=3, freq="D")
-    r = pd.Series([np.nan, 0.01, -0.01], index=idx)
-    px = adjusted_price_index(r, base=100.0)
-    assert np.isnan(px.iloc[0])
-    assert px.iloc[1] == pytest.approx(101.0)
-    assert px.iloc[2] == pytest.approx(99.99)
+    r = pd.Series([np.nan, 0.01, -0.02, 0.03], index=_idx(4))
+    idx = adjusted_price_index(r, base=100.0)
+    # 基准落在首个有效收益的前一天，第一天的收益才不会丢
+    assert idx.iloc[0] == pytest.approx(100.0)
+    assert idx.iloc[1] == pytest.approx(101.0)
+    assert idx.iloc[3] == pytest.approx(100 * 1.01 * 0.98 * 1.03)
+    # 对指数再做 pct_change 应完整还原原收益序列（含第一天）
+    np.testing.assert_allclose(idx.pct_change().values[1:], r.values[1:], atol=1e-12)
+
+
+def test_price_index_keeps_leading_nans_out_of_range():
+    r = pd.Series([np.nan, np.nan, 0.01, 0.02], index=_idx(4))
+    idx = adjusted_price_index(r)
+    assert np.isnan(idx.iloc[0])              # 上市前
+    assert idx.iloc[1] == pytest.approx(100.0)  # 基准日
+    np.testing.assert_allclose(idx.pct_change().values[2:], r.values[2:], atol=1e-12)

@@ -5,6 +5,12 @@
 用法：uv run python scripts/expand_universe.py
 候选 RIC 中可能有无效项，验证（拉 5 条日线）失败的自动剔除；
 期货类标的自动配 c2 远月腿（验证同样失败则去腿保留主合约）。
+
+**已入库的标的以 config/universe.yaml 为准**：下面 CANDIDATES 只是候选清单，
+同名标的若已在 universe.yaml 里，沿用那里的 RIC 而不是候选表里的。
+否则手工修正过的 RIC 会被这份静态清单覆盖回去（本项目里 TOPIX/PLATINUM/
+PALLADIUM/LIVECATTLE/LEANHOGS/KCWHEAT/ROUGHRICE/FEEDERCATTLE 八个都被改对过）。
+重写前会把旧文件备份成 universe.yaml.bak。
 """
 from __future__ import annotations
 
@@ -94,13 +100,37 @@ CANDIDATES: list[tuple[str, str, str]] = [
 FUTURES_CLASSES = {"equity_index", "bond", "energy", "metal", "ags", "rates", "crypto"}
 
 
+def merged_candidates() -> list[tuple[str, str, str]]:
+    """
+    现有 universe.yaml 优先 + CANDIDATES 里的新标的。
+
+    同名标的以已入库的 RIC 为准——那些往往是人工核对/修正过的，
+    不能被这份静态候选表覆盖回去。
+    """
+    cfg = ROOT / "config" / "universe.yaml"
+    existing: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    if cfg.exists():
+        with open(cfg, encoding="utf-8") as f:
+            for inst in (yaml.safe_load(f) or {}).get("instruments", []) or []:
+                name = inst.get("name") or inst["ric"]
+                existing.append((name, inst["ric"], inst.get("asset_class", "default")))
+                seen.add(name)
+    added = [c for c in CANDIDATES if c[0] not in seen]
+    if existing:
+        print(f"沿用 universe.yaml 已有 {len(existing)} 个标的，"
+              f"候选表新增 {len(added)} 个", flush=True)
+    return existing + added
+
+
 def main() -> None:
     src = get_source()
     store = DataStore()
+    candidates = merged_candidates()
 
     # 1) 展开全部 RIC（主 + 腿）并逐条验证
     ric_meta: dict[str, tuple[str, str, bool]] = {}  # ric -> (name, class, is_leg)
-    for name, ric, ac in CANDIDATES:
+    for name, ric, ac in candidates:
         ric_meta[ric] = (name, ac, False)
         if ac in FUTURES_CLASSES and ric.endswith("c1"):
             leg = ric[:-2] + "c2"
@@ -109,7 +139,7 @@ def main() -> None:
     ok: dict[str, int] = {}
     bad: dict[str, str] = {}
     rics = list(ric_meta)
-    print(f"候选 {len(CANDIDATES)} 个标的 / {len(rics)} 条 RIC，开始验证…", flush=True)
+    print(f"候选 {len(candidates)} 个标的 / {len(rics)} 条 RIC，开始验证…", flush=True)
     for i, ric in enumerate(rics, 1):
         try:
             df = src.history(ric, count=5)
@@ -126,7 +156,7 @@ def main() -> None:
 
     # 2) 幸存者全量拉取
     survivors: list[dict] = []
-    for name, ric, ac in CANDIDATES:
+    for name, ric, ac in candidates:
         if ric not in ok:
             continue
         inst: dict = {"name": name, "ric": ric, "asset_class": ac}
@@ -146,8 +176,13 @@ def main() -> None:
 
     # 3) 重写 universe.yaml + 验证报告
     order = ["equity_index", "bond", "fx", "energy", "metal", "ags", "rates", "crypto"]
-    survivors.sort(key=lambda x: (order.index(x["asset_class"]), x["name"]))
+    survivors.sort(key=lambda x: (order.index(x["asset_class"])
+                                  if x["asset_class"] in order else len(order),
+                                  x["name"]))
     out = ROOT / "config" / "universe.yaml"
+    if out.exists():   # 重写前留一份备份
+        (out.parent / "universe.yaml.bak").write_text(
+            out.read_text(encoding="utf-8"), encoding="utf-8")
     header = (
         "# QIS 标的池（由 scripts/expand_universe.py 生成，RIC 均经 LSEG 验证）\n"
         "# ric: LSEG RIC（连续合约 c1/c2）；asset_class: 对应 settings.yaml 的 cost_bps；\n"

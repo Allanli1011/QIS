@@ -88,3 +88,51 @@ def test_roll_cost_charged_on_roll_days():
     # 无 roll_mask 时只有建仓成本
     res2 = run_backtest(prices, weights, cost_bps=10.0)
     np.testing.assert_allclose(res2.cost.values, [0.001, 0.0, 0.0, 0.0], atol=1e-12)
+
+
+def test_data_gap_does_not_fabricate_turnover():
+    """
+    回归：目标权重恒定的买入持有，遇到某标的的假期不应产生换手。
+
+    旧引擎只把持仓在缺口日清零、目标权重不动，|目标−漂移| 把整个仓位
+    记成一轮平仓+建仓，恒定 0.5 的持仓会报出 2.00 的总换手。
+    """
+    idx = pd.date_range("2020-01-01", periods=6, freq="B")
+    prices = pd.DataFrame({
+        "A": [100.0, 101.0, 102.0, 103.0, 104.0, 105.0],
+        "B": [50.0, 50.5, np.nan, 51.5, 52.0, 52.5],   # 第 3 天是 B 的假期
+    }, index=idx)
+    weights = pd.DataFrame(0.5, index=idx, columns=["A", "B"])
+    res = run_backtest(prices, weights, cost_bps=10.0)
+
+    assert res.weights["B"].iloc[2] == pytest.approx(0.5)   # 假期照样持仓
+    # 只有首日建仓 1.0 + 少量真实漂移再平衡，远小于旧引擎的 2.0
+    assert res.turnover.sum() < 1.05
+    # 跨假期的涨幅必须落到下一个交易日，不能丢
+    assert res.returns["B"].iloc[3] == pytest.approx(51.5 / 50.5 - 1)
+
+
+def test_delisted_instrument_stops_trading_without_cost():
+    """退市后既不持仓也不该继续计换手。"""
+    idx = pd.date_range("2020-01-01", periods=4, freq="B")
+    prices = pd.DataFrame({"A": [100.0, 101.0, np.nan, np.nan]}, index=idx)
+    weights = pd.DataFrame({"A": [1.0, 1.0, 1.0, 1.0]}, index=idx)
+    res = run_backtest(prices, weights, cost_bps=10.0)
+    assert res.turnover.iloc[2] == pytest.approx(0.0)
+    assert res.turnover.iloc[3] == pytest.approx(0.0)
+    assert res.weights["A"].iloc[2] == pytest.approx(0.0)
+
+
+def test_returns_exposed_for_attribution():
+    """归因必须复用引擎的收益，避免调用方重算出不同口径。"""
+    idx = pd.date_range("2020-01-01", periods=4, freq="B")
+    prices = pd.DataFrame({"A": [100.0, 110.0, np.nan, 121.0]}, index=idx)
+    weights = pd.DataFrame({"A": [1.0, 1.0, 1.0, 1.0]}, index=idx)
+    res = run_backtest(prices, weights)
+    assert res.returns.shape == prices.shape
+    assert res.returns["A"].iloc[1] == pytest.approx(0.10)
+    assert res.returns["A"].iloc[2] == pytest.approx(0.0)     # 假期
+    assert res.returns["A"].iloc[3] == pytest.approx(0.10)    # 跨假期
+    # 分标的贡献之和 = 组合费前收益
+    np.testing.assert_allclose((res.weights * res.returns).sum(axis=1).values,
+                               res.gross.values, atol=1e-12)
