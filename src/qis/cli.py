@@ -27,7 +27,8 @@ from qis.data.universe import Universe
 from qis.portfolio.construction import (cap_binding_share, inverse_vol, normalize_gross,
                                         vol_target_factor, weight_band)
 from qis.portfolio.risk import ewma_vol
-from qis.strategy.carry import carry_signals
+from qis.data.curve import curve_matrix, curve_depth
+from qis.strategy.carry import carry_raw, curve_carry, signals_from_raw
 from qis.strategy.trend import trend_weights
 from qis.strategy.xsmom import xsmom_weights
 
@@ -184,6 +185,39 @@ def carry_horizons(store: DataStore, u: Universe) -> pd.Series:
     return pd.Series(out, dtype=float)
 
 
+def _annualized_carry(store: DataStore, u: Universe, horizon: pd.Series,
+                      depth: int = 4, min_legs: int = 3) -> pd.DataFrame:
+    """
+    年化 carry 矩阵（date × name）。
+
+    有 >= min_legs 个月份的标的用**整条曲线的回归斜率**——N 点回归斜率的方差
+    约为两点差分的 1/N，这是 c1/c2 信噪比问题（corr(信噪比, IC) = −0.53）的
+    根治办法。曲线不够深的标的回退到 c1/c2 两点价差。
+    """
+    futs = [i for i in u.instruments if i.get("carry_leg")]
+    curves = curve_matrix(store, futs, depth=depth)
+
+    legs = u.carry_legs()
+    leg_rics = {v: k for k, v in legs.items()}
+    front = clean_prices(store.load_close_matrix(u.rics()).rename(columns=u.ric_to_name()))
+    defer = clean_prices(store.load_close_matrix(list(leg_rics)).rename(columns=leg_rics))
+    two_pt = carry_raw(front, defer, horizon=horizon)
+
+    if not curves:
+        return two_pt
+    slope = curve_carry(curves, horizon, use_legs=tuple(range(1, depth + 1)),
+                        min_legs=min_legs)
+    if slope.empty:
+        return two_pt
+    # 曲线够深的列用斜率，其余回退两点
+    deep = curve_depth(curves)
+    use = [c for c in slope.columns if deep.get(c, 0) >= min_legs]
+    out = two_pt.reindex(index=two_pt.index.union(slope.index)).copy()
+    for c in use:
+        out[c] = slope[c].reindex(out.index)
+    return out
+
+
 def _raw_strategy_weights(name: str, prices: pd.DataFrame, u: Universe,
                           store: DataStore, gross: float) -> pd.DataFrame:
     if name == "trend":
@@ -193,19 +227,19 @@ def _raw_strategy_weights(name: str, prices: pd.DataFrame, u: Universe,
         # 组内排名支撑不起截面动量，靠的是全池广度。见 strategy/xsmom.py。
         return xsmom_weights(prices, gross=gross)
     if name == "carry":
-        # 信号用原始近/远月价差（水平关系），波动估计用调整后收益
-        legs = u.carry_legs()
-        leg_rics = {v: k for k, v in legs.items()}  # leg ric -> name
-        raw_front = clean_prices(store.load_close_matrix(u.rics()).rename(columns=u.ric_to_name()))
-        deferred = clean_prices(store.load_close_matrix(list(leg_rics)).rename(columns=leg_rics))
-        # 默认截面模式 + 年化：年化正是让截面可比的前提（见 strategy/carry.py）
-        sig = carry_signals(raw_front, deferred, horizon=carry_horizons(store, u))
+        # 年化 carry 优先用整条曲线的回归斜率（信噪比远高于两点价差），
+        # 曲线不够深的标的回退到 c1/c2。波动估计用换月调整后的收益。
+        H = carry_horizons(store, u)
+        raw = _annualized_carry(store, u, H)
+        sig = signals_from_raw(raw, columns=prices.columns)
         vol = ewma_vol(to_returns(prices))
         # 必须连 index 一起对齐：raw_front 是未切窗口的全历史，只对齐列会让权重
         # 带着回测窗口之前的几千行进入后续的波动目标缩放，污染 EWMA 预热。
         sig = sig.reindex(index=prices.index, columns=prices.columns).fillna(0.0)
         w = inverse_vol(sig, vol, gross=gross)
-        no_leg = [c for c in prices.columns if c not in deferred.columns]
+        # 无远月腿的标的（FX 现货等）没有期限结构，权重保持 0
+        with_leg = set(u.carry_legs())
+        no_leg = [c for c in prices.columns if c not in with_leg]
         if no_leg:
             w[no_leg] = 0.0
             w = normalize_gross(w, gross)

@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from qis.data.panel import ffill_prices, to_returns
@@ -44,6 +45,59 @@ def carry_raw(front: pd.DataFrame, deferred: pd.DataFrame,
     return spread
 
 
+def curve_carry(
+    curves: "dict[int, pd.DataFrame]",
+    horizon: pd.Series,
+    use_legs: tuple[int, ...] = (1, 2, 3, 4),
+    min_legs: int = 3,
+) -> pd.DataFrame:
+    """
+    从多月合约曲线用**回归斜率**估年化 carry。
+
+        log F_i = a + b·t_i ,   t_i = (i−1)·h    （h = 相邻合约到期间隔，年）
+        carry   = −b
+
+    曲线下倾（backwardation）时 b<0、carry>0——持有近月、沿曲线往上滚可赚 roll yield。
+
+    为什么用回归而不是两点价差：c1/c2 是两个带噪报价的差分，信噪比极差
+    （本池实测 corr(信噪比, IC) = −0.53，噪声大的品种 carry 系统性做反）。
+    N 点回归斜率的方差约为两点差分的 1/N，这是该问题的根治办法而不是缓解。
+
+    只用**当日有真实报价**的月份，且至少 min_legs 个——否则不同日期的报价
+    会被凑成一条曲线、造出虚假斜率。
+    """
+    legs = [n for n in use_legs if n in curves]
+    if len(legs) < min_legs:
+        return pd.DataFrame()
+
+    idx = curves[legs[0]].index
+    cols = curves[legs[0]].columns
+    for n in legs[1:]:
+        idx = idx.union(curves[n].index)
+        cols = cols.union(curves[n].columns)
+
+    n_obs = None
+    sx = sy = sxx = sxy = None
+    for n in legs:
+        y = np.log(curves[n].reindex(index=idx, columns=cols))
+        m = y.notna()
+        x = float(n - 1)                       # 合约序号（相对），乘 h 才是年
+        y0 = y.fillna(0.0)
+        mi = m.astype(float)
+        n_obs = mi if n_obs is None else n_obs + mi
+        sx = x * mi if sx is None else sx + x * mi
+        sy = y0 if sy is None else sy + y0
+        sxx = (x * x) * mi if sxx is None else sxx + (x * x) * mi
+        sxy = x * y0 if sxy is None else sxy + x * y0
+
+    denom = n_obs * sxx - sx * sx
+    slope = (n_obs * sxy - sx * sy) / denom.where(denom > 0)
+    slope = slope.where(n_obs >= min_legs)
+
+    h = horizon.reindex(slope.columns)
+    return (-slope).div(h.where(h > 0), axis=1)
+
+
 def carry_signals(
     front: pd.DataFrame,
     deferred: pd.DataFrame,
@@ -64,6 +118,24 @@ def carry_signals(
                  剔除结构性升贴水，但也丢掉了截面上的相对信息。
     """
     raw = carry_raw(front, deferred, horizon=horizon)
+    return signals_from_raw(raw, groups=groups, mode=mode, lookback=lookback,
+                            smooth=smooth, columns=front.columns)
+
+
+def signals_from_raw(
+    raw: pd.DataFrame,
+    groups: dict[str, str] | None = None,
+    mode: str = "xs",
+    lookback: int = 252,
+    smooth: int = 21,
+    columns: pd.Index | None = None,
+) -> pd.DataFrame:
+    """
+    已经算好的**年化 carry** → 交易信号（平滑 + 去均值）。
+
+    raw 可以来自两点价差（carry_raw）也可以来自整条曲线的回归斜率（curve_carry）；
+    后者信噪比高得多，见 curve_carry 的 docstring。
+    """
     if smooth > 1:
         # 先平滑价差再取信号。c1/c2 的日度测量噪声（非同步收盘、买卖价跳动）
         # 会让"carry 高"往往只是 c1 当天被推高了、次日回落，
@@ -92,8 +164,10 @@ def carry_signals(
     else:
         raise ValueError(f"unknown mode: {mode}")
 
-    out = pd.DataFrame(0.0, index=front.index, columns=front.columns)
-    out[demeaned.columns] = demeaned.fillna(0.0)
+    cols = columns if columns is not None else raw.columns
+    out = pd.DataFrame(0.0, index=raw.index, columns=cols)
+    common = [c for c in demeaned.columns if c in out.columns]
+    out[common] = demeaned[common].fillna(0.0)
     return out
 
 

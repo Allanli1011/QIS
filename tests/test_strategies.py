@@ -305,3 +305,50 @@ def test_xsmom_risk_adjusted_ranking_does_not_let_vol_dominate():
     raw = xsmom_signals(px, risk_adjusted=False).iloc[300:]["LOUD"].abs().mean()
     adj = xsmom_signals(px, risk_adjusted=True).iloc[300:]["LOUD"].abs().mean()
     assert adj < raw
+
+
+def test_curve_carry_recovers_known_slope():
+    """从多月曲线拟合的年化 carry 必须与理论斜率一致。"""
+    from qis.strategy.carry import curve_carry
+    idx = pd.date_range("2024-01-01", periods=4, freq="B")
+    horizon = pd.Series({"A": 1 / 12})          # 月度合约
+    # contango：每月 log 价 +1% → 年化 carry = −12%
+    up = {n: pd.DataFrame({"A": 100 * np.exp(0.01 * (n - 1))}, index=idx) for n in (1, 2, 3, 4)}
+    assert curve_carry(up, horizon)["A"].iloc[-1] == pytest.approx(-0.12, rel=1e-9)
+    # backwardation：每月 −2% → 年化 carry = +24%
+    dn = {n: pd.DataFrame({"A": 100 * np.exp(-0.02 * (n - 1))}, index=idx) for n in (1, 2, 3, 4)}
+    assert curve_carry(dn, horizon)["A"].iloc[-1] == pytest.approx(0.24, rel=1e-9)
+
+
+def test_curve_carry_beats_two_point_spread_on_noise():
+    """
+    N 点回归斜率的方差约为两点差分的 1/N——这是 c1/c2 信噪比问题的根治办法。
+    同一条真实曲线加同等噪声，4 点估计必须明显比 2 点稳。
+    """
+    from qis.strategy.carry import curve_carry
+    rng = np.random.default_rng(7)
+    idx = pd.date_range("2024-01-01", periods=300, freq="B")
+    horizon = pd.Series({"A": 1 / 12})
+    true_slope = -0.004
+    legs = {}
+    for n in (1, 2, 3, 4):
+        lp = np.log(100) + true_slope * (n - 1) + rng.normal(0, 0.002, len(idx))
+        legs[n] = pd.DataFrame({"A": np.exp(lp)}, index=idx)
+    c4 = curve_carry(legs, horizon, use_legs=(1, 2, 3, 4))["A"]
+    c2 = curve_carry(legs, horizon, use_legs=(1, 2), min_legs=2)["A"]
+    # 两者都是无偏估计，差别在方差：4 点应至少稳一倍（理论 sqrt(1/N) 关系）
+    assert c4.std() < c2.std() / 2
+    assert c4.mean() == pytest.approx(-true_slope * 12, abs=0.005)   # 无偏
+
+
+def test_curve_carry_requires_synchronous_quotes():
+    """某月缺报价那天不能凑数：可用月份不足 min_legs 时应给 NaN。"""
+    from qis.strategy.carry import curve_carry
+    idx = pd.date_range("2024-01-01", periods=3, freq="B")
+    legs = {n: pd.DataFrame({"A": [100.0 * n, 100.0 * n, 100.0 * n]}, index=idx)
+            for n in (1, 2, 3)}
+    legs[3].iloc[1] = np.nan
+    legs[2].iloc[1] = np.nan
+    out = curve_carry(legs, pd.Series({"A": 0.25}), use_legs=(1, 2, 3), min_legs=3)["A"]
+    assert np.isnan(out.iloc[1])
+    assert np.isfinite(out.iloc[0])
