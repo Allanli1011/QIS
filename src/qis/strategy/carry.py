@@ -21,8 +21,15 @@ from qis.portfolio.construction import inverse_vol, normalize_gross
 from qis.portfolio.risk import ewma_vol
 
 
-def carry_raw(front: pd.DataFrame, deferred: pd.DataFrame) -> pd.DataFrame:
-    """原始 carry = front/deferred - 1（无腿的标的列保持 NaN）。"""
+def carry_raw(front: pd.DataFrame, deferred: pd.DataFrame,
+              horizon: pd.Series | None = None) -> pd.DataFrame:
+    """
+    carry = front/deferred - 1（无腿的标的列保持 NaN）。
+
+    horizon 给出每个标的两腿到期日的间隔（年）时，把 carry **年化**：
+    月度合约的 c1/c2 只跨 1 个月、季度合约跨 3 个月，不年化就没法在截面上比，
+    时序上合约周期一变信号水平也会跟着跳。见 qis.data.roll.contract_horizon。
+    """
     common = [c for c in front.columns if c in deferred.columns]
     f, d = front[common], deferred[common]
     # 只在**两腿同日都有真实报价**时计价差。两腿各自 ffill 再相除是错的：
@@ -30,26 +37,33 @@ def carry_raw(front: pd.DataFrame, deferred: pd.DataFrame) -> pd.DataFrame:
     # 那样会把"旧的 c1 / 新的 c2"凑成一个价差，凭空造出期限结构变动
     # ——实测价差的日变动被放大 32%，而 carry 信号对这种噪声极其敏感。
     spread = (f / d - 1.0).where(f.notna() & d.notna())
-    return ffill_prices(spread)
+    spread = ffill_prices(spread)
+    if horizon is not None:
+        h = horizon.reindex(spread.columns)
+        spread = spread.div(h.where(h > 0), axis=1)
+    return spread
 
 
 def carry_signals(
     front: pd.DataFrame,
     deferred: pd.DataFrame,
     groups: dict[str, str] | None = None,
-    mode: str = "ts",
+    mode: str = "xs",
     lookback: int = 252,
     smooth: int = 21,
+    horizon: pd.Series | None = None,
 ) -> pd.DataFrame:
     """
     carry 信号。
 
-      mode="ts": 时序模式（默认）——自身价差减其 lookback 日滚动均值。
-                 剔除结构性升贴水（股指/债券长期 contango → 信号≈0），
-                 也避免组内极端标的（如天然气的季节性）污染同组其他标的。
-      mode="xs": 截面模式——组内去均值（多 carry 高者、空 carry 低者）。
+      mode="xs": 截面模式（默认）——组内去均值（多 carry 高者、空 carry 低者）。
+                 **前提是先年化**（传 horizon）：不年化时月度合约的 c1/c2 只跨
+                 1 个月、季度合约跨 3 个月，截面上比的是合约周期而不是 carry。
+                 本池实测 ts −0.97 / xs −0.35。
+      mode="ts": 时序模式——自身价差减其 lookback 日滚动均值。
+                 剔除结构性升贴水，但也丢掉了截面上的相对信息。
     """
-    raw = carry_raw(front, deferred)
+    raw = carry_raw(front, deferred, horizon=horizon)
     if smooth > 1:
         # 先平滑价差再取信号。c1/c2 的日度测量噪声（非同步收盘、买卖价跳动）
         # 会让"carry 高"往往只是 c1 当天被推高了、次日回落，
@@ -90,11 +104,12 @@ def carry_weights(
     mode: str = "ts",
     lookback: int = 252,
     smooth: int = 21,
+    horizon: pd.Series | None = None,
     vol_span: int = 40,
     gross: float = 1.0,
 ) -> pd.DataFrame:
     sig = carry_signals(front, deferred, groups=groups, mode=mode,
-                        lookback=lookback, smooth=smooth)
+                        lookback=lookback, smooth=smooth, horizon=horizon)
     vol = ewma_vol(to_returns(front), span=vol_span)
     w = inverse_vol(sig, vol, gross=gross)
     # 无 carry 腿的标的权重保持 0

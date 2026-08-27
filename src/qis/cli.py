@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from qis.analytics.metrics import infer_ann_factor, summary
@@ -19,7 +20,8 @@ from qis.backtest.costs import cost_bps_by_name, load_settings
 from qis.backtest.engine import run_backtest
 from qis.data.lseg import get_source
 from qis.data.panel import clean_prices, liquid_mask, to_returns
-from qis.data.roll import adjust, adjusted_price_index, roll_diagnostics
+from qis.data.roll import (adjust, adjusted_price_index, contract_horizon,
+                           roll_diagnostics, roll_days)
 from qis.data.store import DataStore
 from qis.data.universe import Universe
 from qis.portfolio.construction import (cap_binding_share, inverse_vol, normalize_gross,
@@ -146,6 +148,42 @@ def _strategy_weights(name: str, prices: pd.DataFrame, u: Universe,
     return normalize_gross(w.where(liq, 0.0), gross)
 
 
+def carry_horizons(store: DataStore, u: Universe) -> pd.Series:
+    """
+    每个标的 c1/c2 两腿到期日的间隔（年），用于把 carry 年化。
+
+    换月识别不可靠的标的（次数离谱 → 间隔估计也不可信）用**同资产类别中位数**兜底，
+    整类都没有时退回 0.25 年（季度合约）。
+    """
+    ac = u.asset_classes()
+    est: dict[str, float] = {}
+    for i in u.instruments:
+        name, ric = i["name"], i["ric"]
+        if not i.get("carry_leg"):
+            continue
+        f = store.load(ric)
+        if f.empty:
+            continue
+        d = roll_diagnostics(f["close"], f.get("oi"), f.get("volume"))
+        if not d["plausible"]:
+            continue                      # 识别不可信 → 不用它的间隔估计
+        mask, _ = roll_days(f["close"], f.get("oi"), f.get("volume"))
+        h = contract_horizon(mask)
+        if h == h and h > 0:
+            est[name] = h
+    by_ac: dict[str, list[float]] = {}
+    for n, h in est.items():
+        by_ac.setdefault(ac.get(n, "default"), []).append(h)
+    med = {k: float(np.median(v)) for k, v in by_ac.items()}
+    out = {}
+    for i in u.instruments:
+        if not i.get("carry_leg"):
+            continue
+        n = i["name"]
+        out[n] = est.get(n, med.get(ac.get(n, "default"), 0.25))
+    return pd.Series(out, dtype=float)
+
+
 def _raw_strategy_weights(name: str, prices: pd.DataFrame, u: Universe,
                           store: DataStore, gross: float) -> pd.DataFrame:
     if name == "trend":
@@ -160,7 +198,8 @@ def _raw_strategy_weights(name: str, prices: pd.DataFrame, u: Universe,
         leg_rics = {v: k for k, v in legs.items()}  # leg ric -> name
         raw_front = clean_prices(store.load_close_matrix(u.rics()).rename(columns=u.ric_to_name()))
         deferred = clean_prices(store.load_close_matrix(list(leg_rics)).rename(columns=leg_rics))
-        sig = carry_signals(raw_front, deferred)  # 默认时序模式
+        # 默认截面模式 + 年化：年化正是让截面可比的前提（见 strategy/carry.py）
+        sig = carry_signals(raw_front, deferred, horizon=carry_horizons(store, u))
         vol = ewma_vol(to_returns(prices))
         # 必须连 index 一起对齐：raw_front 是未切窗口的全历史，只对齐列会让权重
         # 带着回测窗口之前的几千行进入后续的波动目标缩放，污染 EWMA 预热。

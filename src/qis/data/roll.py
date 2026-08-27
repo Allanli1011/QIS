@@ -146,6 +146,22 @@ def roll_diagnostics(
             "per_year": per_year, "plausible": bool(ok)}
 
 
+def contract_horizon(mask: pd.Series, ann_days: float = 252.0,
+                      min_rolls: int = 4) -> float:
+    """
+    从换月日的间隔估计 c1 与 c2 两腿到期日的间隔（年）。
+
+    c1 与 c2 同步滚动，所以相邻两次换月的间隔就是相邻合约的到期间隔。
+    这个数用来把 c1/c2 价差**年化**——本池的合约周期从 18 到 476 个交易日
+    相差 27 倍，不年化的话截面上比的是"合约周期长短"而不是 carry。
+    换月次数不足以估计时返回 nan（由调用方兜底）。
+    """
+    idx = np.flatnonzero(mask.to_numpy())
+    if len(idx) < min_rolls:
+        return float("nan")
+    return float(np.median(np.diff(idx))) / ann_days
+
+
 def adjusted_price_index(returns: pd.Series, base: float = 100.0) -> pd.Series:
     """
     把日收益序列转成类价格指数。

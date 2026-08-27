@@ -20,16 +20,46 @@ def _trendy_prices(n=300):
 
 
 def test_trend_signal_direction():
+    """两种构造都必须给出正确方向；边界各按各自的定义。"""
     prices = _trendy_prices()
-    sig = trend_signals(prices, lookbacks=(21, 63))
-    last = sig.iloc[-1]
-    assert last["UP"] > 0 and last["DOWN"] < 0
-    assert sig.abs().max().max() <= 1.0
+    ew = trend_signals(prices)                                   # 默认 ewmac
+    assert ew.iloc[-1]["UP"] > 0 > ew.iloc[-1]["DOWN"]
+    assert ew.abs().max().max() <= 2.0 + 1e-9                    # clip=2.0
+
+    sv = trend_signals(prices, method="sign", lookbacks=(21, 63))
+    assert sv.iloc[-1]["UP"] > 0 > sv.iloc[-1]["DOWN"]
+    assert sv.abs().max().max() <= 1.0                           # 符号投票落在 [-1,1]
+
+
+def test_ewmac_keeps_conviction_that_sign_vote_throws_away():
+    """
+    符号投票只看涨跌方向：微弱上涨与强劲上涨记同一票。
+    EWMAC 保留强度，强趋势应当给出明显更大的信号。
+    """
+    idx = pd.date_range("2022-01-01", periods=400, freq="B")
+    rng = np.random.default_rng(21)
+    noise = rng.normal(0, 0.003, 400)         # 两者共用同一份噪声，只有漂移不同
+    weak = 100 * np.cumprod(1 + 0.0006 + noise)     # +23%
+    strong = 100 * np.cumprod(1 + 0.0030 + noise)   # +221%
+    px = pd.DataFrame({"WEAK": weak, "STRONG": strong}, index=idx)
+    sv = trend_signals(px, method="sign").iloc[-1]
+    ew = trend_signals(px).iloc[-1]
+    # 符号投票：两者都是满票，10 倍的涨幅差异被完全抹平
+    assert sv["WEAK"] == pytest.approx(1.0) and sv["STRONG"] == pytest.approx(1.0)
+    # EWMAC：强趋势拿到约 2 倍的信号
+    assert ew["STRONG"] > 1.8 * ew["WEAK"] > 0
+
+
+def test_ewmac_clip_bounds_single_instrument_conviction():
+    from qis.strategy.trend import ewmac_signals
+    idx = pd.date_range("2022-01-01", periods=400, freq="B")
+    px = pd.DataFrame({"A": 100 * np.cumprod(np.full(400, 1.01))}, index=idx)  # 极端趋势
+    assert ewmac_signals(px, clip=1.0).abs().max().max() <= 1.0 + 1e-9
 
 
 def test_trend_weights_gross_normalized():
     prices = _trendy_prices()
-    w = trend_weights(prices, lookbacks=(21, 63), gross=1.0)
+    w = trend_weights(prices, method="sign", lookbacks=(21, 63), gross=1.0)
     active = w.abs().sum(axis=1)
     active = active[active > 0]
     np.testing.assert_allclose(active.values, 1.0, atol=1e-10)
@@ -49,6 +79,23 @@ def test_xsmom_groups_isolated():
     sig = xsmom_signals(prices, lookback=63,
                         groups={"UP": "g1", "DOWN": "g1", "FLAT": "g2"})
     assert sig["FLAT"].iloc[-1] == 0.0  # 单标的组信号为 0（组内 <3 个）
+
+
+def test_carry_annualized_makes_cycles_comparable():
+    """
+    月度合约的 c1/c2 只跨 1 个月、季度合约跨 3 个月，不年化就没法在截面上比。
+    同样的年化 carry，两者的信号应当一致。
+    """
+    from qis.strategy.carry import carry_raw
+    idx = pd.date_range("2024-01-01", periods=10, freq="B")
+    # MONTHLY 每月 -1%（年化 -12%）；QUARTERLY 每季 -3%（年化也是 -12%）
+    front = pd.DataFrame({"MONTHLY": 99.0, "QUARTERLY": 97.0}, index=idx)
+    defer = pd.DataFrame({"MONTHLY": 100.0, "QUARTERLY": 100.0}, index=idx)
+    horizon = pd.Series({"MONTHLY": 1 / 12, "QUARTERLY": 0.25})
+    plain = carry_raw(front, defer).iloc[-1]
+    assert abs(plain["MONTHLY"]) < abs(plain["QUARTERLY"]) / 2   # 未年化：差 3 倍
+    ann = carry_raw(front, defer, horizon=horizon).iloc[-1]
+    assert ann["MONTHLY"] == pytest.approx(ann["QUARTERLY"], rel=0.02)
 
 
 def test_carry_cross_sectional_long_high_short_low():
@@ -216,8 +263,9 @@ def test_carry_smoothing_reduces_signal_noise():
     noise = pd.Series(rng.normal(0, 0.01, 600), index=idx)          # 日度测量噪声
     f = pd.DataFrame({"A": 100 * (1 + lvl + noise)}, index=idx)
     d = pd.DataFrame({"A": 100.0}, index=idx)
-    s1 = carry_signals(f, d, smooth=1)["A"].iloc[300:]
-    s21 = carry_signals(f, d, smooth=21)["A"].iloc[300:]
+    # 显式用 ts 模式：这里测的是平滑机制，单标的撑不起截面去均值
+    s1 = carry_signals(f, d, smooth=1, mode="ts")["A"].iloc[300:]
+    s21 = carry_signals(f, d, smooth=21, mode="ts")["A"].iloc[300:]
     assert s21.diff().abs().mean() < s1.diff().abs().mean() / 3
 
 
