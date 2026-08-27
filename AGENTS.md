@@ -28,6 +28,9 @@ QIS 日频策略研究回测平台。uv 管理，Python 3.13，src layout（`src
   （rates/crypto 各 2 个会被整组置零），组内排名撑不起截面动量。
 - carry 的 `c1/c2` 价差必须**两腿同日都有真实报价**才计（见 `carry_raw`），
   默认平滑 21 日 + 按合约到期间隔年化 + 截面模式——这个信号对日度测量噪声极其敏感。
+- carry 优先用多月曲线的回归斜率（`curve_carry`），不是 c1/c2 两点差分：
+  实测降噪 2~4 倍。补曲线数据用 `uv run python scripts/fetch_curve.py --depth 4`。
+  能去掉近月就去掉（c1 到期收敛效应大），但金融期货的 c3/c4 更薄要留意。
 - trend 默认 EWMAC（EWMA 快慢交叉），不要改回符号投票：后者丢掉趋势强度信息，
   实测 SR +0.70 vs +0.96 且换手高 74%。旧构造留在 `method="sign"`。
 - 调参前先看 README「策略表现的三个已知成因」：收益低首先是 `gross` 没放大

@@ -352,3 +352,23 @@ def test_curve_carry_requires_synchronous_quotes():
     out = curve_carry(legs, pd.Series({"A": 0.25}), use_legs=(1, 2, 3), min_legs=3)["A"]
     assert np.isnan(out.iloc[1])
     assert np.isfinite(out.iloc[0])
+
+
+def test_curve_carry_prefers_deferred_legs():
+    """
+    c1 临近到期有收敛与流动性效应，是曲线上噪声最大的一点。
+    有足够月份时应当去掉近月——去掉后估计明显更稳。
+    """
+    from qis.strategy.carry import curve_carry
+    rng = np.random.default_rng(31)
+    idx = pd.date_range("2024-01-01", periods=400, freq="B")
+    horizon = pd.Series({"A": 1 / 12})
+    slope = -0.004
+    legs = {}
+    for n in (1, 2, 3, 4):
+        noise = 0.008 if n == 1 else 0.002          # 近月噪声大 4 倍
+        lp = np.log(100) + slope * (n - 1) + rng.normal(0, noise, len(idx))
+        legs[n] = pd.DataFrame({"A": np.exp(lp)}, index=idx)
+    with_front = curve_carry(legs, horizon, use_legs=(1, 2, 3, 4))["A"]
+    no_front = curve_carry(legs, horizon, use_legs=(2, 3, 4))["A"]
+    assert no_front.std() < with_front.std()

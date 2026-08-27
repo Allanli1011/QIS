@@ -190,9 +190,14 @@ def _annualized_carry(store: DataStore, u: Universe, horizon: pd.Series,
     """
     年化 carry 矩阵（date × name）。
 
-    有 >= min_legs 个月份的标的用**整条曲线的回归斜率**——N 点回归斜率的方差
-    约为两点差分的 1/N，这是 c1/c2 信噪比问题（corr(信噪比, IC) = −0.53）的
-    根治办法。曲线不够深的标的回退到 c1/c2 两点价差。
+    优先用**整条曲线的回归斜率**：N 点回归斜率的方差约为两点差分的 1/N，
+    这是 c1/c2 信噪比问题（corr(信噪比, IC) = −0.53）的根治办法。
+    实测本池年化 carry 的绝对日噪声降低 2~4 倍（SILVER 0.060 → 0.017）。
+
+    月份取舍：**能去掉近月就去掉**。c1 临近到期时有收敛与流动性效应，
+    是曲线上噪声最大的一点（SILVER 用 (2,3,4) 比 (1,2,3,4) 再干净 1.6 倍）。
+    有 4 个月份的标的用 (2,3,4)，只有 3 个月份的用 (1,2,3)，
+    都不够的回退到 c1/c2 两点价差。
     """
     futs = [i for i in u.instruments if i.get("carry_leg")]
     curves = curve_matrix(store, futs, depth=depth)
@@ -202,19 +207,21 @@ def _annualized_carry(store: DataStore, u: Universe, horizon: pd.Series,
     front = clean_prices(store.load_close_matrix(u.rics()).rename(columns=u.ric_to_name()))
     defer = clean_prices(store.load_close_matrix(list(leg_rics)).rename(columns=leg_rics))
     two_pt = carry_raw(front, defer, horizon=horizon)
-
     if not curves:
         return two_pt
-    slope = curve_carry(curves, horizon, use_legs=tuple(range(1, depth + 1)),
-                        min_legs=min_legs)
-    if slope.empty:
-        return two_pt
-    # 曲线够深的列用斜率，其余回退两点
+
     deep = curve_depth(curves)
-    use = [c for c in slope.columns if deep.get(c, 0) >= min_legs]
-    out = two_pt.reindex(index=two_pt.index.union(slope.index)).copy()
-    for c in use:
-        out[c] = slope[c].reindex(out.index)
+    near = curve_carry(curves, horizon, use_legs=tuple(range(1, min_legs + 1)),
+                       min_legs=min_legs)                      # 含近月，覆盖广
+    far = curve_carry(curves, horizon, use_legs=tuple(range(2, depth + 1)),
+                      min_legs=min_legs)                       # 去掉近月，更干净
+    out = two_pt.reindex(index=two_pt.index.union(near.index)).copy()
+    for c in out.columns:
+        d = int(deep.get(c, 0))
+        if d > min_legs and c in far.columns:
+            out[c] = far[c].reindex(out.index)
+        elif d >= min_legs and c in near.columns:
+            out[c] = near[c].reindex(out.index)
     return out
 
 
