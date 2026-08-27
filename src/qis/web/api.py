@@ -46,7 +46,7 @@ def create_app(service: Optional[QISService] = None) -> FastAPI:
     @app.get("/api/run")
     def run(strategy: str,
             start: Optional[str] = None, end: Optional[str] = None,
-            vol_target: Optional[float] = None, gross: float = 1.0,
+            vol_target: Optional[float] = None, gross: Optional[float] = None,
             classes: Optional[str] = None, with_cost: bool = True,
             band: Optional[float] = None):
         cls = tuple(sorted(classes.split(","))) if classes else None

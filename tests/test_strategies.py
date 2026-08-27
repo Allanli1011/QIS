@@ -187,3 +187,73 @@ def test_strategies_survive_calendar_gaps():
         assert np.isfinite(w.values).all()
         assert w.iloc[-1].abs().sum() == pytest.approx(1.0)
         assert abs(w["UP"].iloc[-1]) > 1e-6   # 有洞的标的仍然拿得到权重
+
+
+def test_carry_raw_requires_synchronous_quotes():
+    """
+    回归：两腿的停牌日未必重合，各自 ffill 再相除会把"旧 c1 / 新 c2"凑成价差，
+    凭空造出期限结构变动。carry 信号对这种噪声极其敏感
+    （实测 corr(信噪比, IC) = −0.53）。
+    """
+    from qis.strategy.carry import carry_raw
+    idx = pd.date_range("2024-01-01", periods=5, freq="B")
+    front = pd.DataFrame({"A": [100.0, 101.0, 102.0, 103.0, 104.0]}, index=idx)
+    defer = pd.DataFrame({"A": [105.0, np.nan, np.nan, 108.0, 109.0]}, index=idx)
+    raw = carry_raw(front, defer)["A"]
+    first = 100.0 / 105.0 - 1.0
+    # 远月缺报价的两天应沿用上一个**同步**价差，而不是拿 101/105、102/105 现算
+    assert raw.iloc[1] == pytest.approx(first)
+    assert raw.iloc[2] == pytest.approx(first)
+    assert raw.iloc[3] == pytest.approx(103.0 / 108.0 - 1.0)
+
+
+def test_carry_smoothing_reduces_signal_noise():
+    """价差先平滑再取信号，是为了压掉 c1/c2 的日度测量噪声。"""
+    from qis.strategy.carry import carry_signals
+    idx = pd.date_range("2022-01-01", periods=600, freq="B")
+    rng = np.random.default_rng(4)
+    lvl = pd.Series(np.linspace(0, 0.02, 600), index=idx)          # 缓慢的真实期限结构
+    noise = pd.Series(rng.normal(0, 0.01, 600), index=idx)          # 日度测量噪声
+    f = pd.DataFrame({"A": 100 * (1 + lvl + noise)}, index=idx)
+    d = pd.DataFrame({"A": 100.0}, index=idx)
+    s1 = carry_signals(f, d, smooth=1)["A"].iloc[300:]
+    s21 = carry_signals(f, d, smooth=21)["A"].iloc[300:]
+    assert s21.diff().abs().mean() < s1.diff().abs().mean() / 3
+
+
+def test_xsmom_defaults_rank_across_whole_universe():
+    """
+    截面动量靠广度：本池按资产类别分组时 rates/crypto 只有 2 个成员会被整组置零。
+    默认必须是全体一起排名。
+    """
+    import inspect
+    from qis.strategy.xsmom import xsmom_weights
+    sig = inspect.signature(xsmom_weights)
+    assert sig.parameters["groups"].default is None
+    assert sig.parameters["risk_adjusted"].default is True
+
+    rng = np.random.default_rng(9)
+    idx = pd.date_range("2020-01-01", periods=400, freq="B")
+    cols = [f"I{i}" for i in range(8)]
+    px = pd.DataFrame(100 * np.cumprod(1 + rng.normal(0, 0.01, (400, 8)), axis=0),
+                      index=idx, columns=cols)
+    # 两个成员的小组会被整组置零 → 分组排名等于放弃这些标的
+    tiny = {c: ("small" if i < 2 else "big") for i, c in enumerate(cols)}
+    w_grouped = xsmom_weights(px, groups=tiny)
+    assert w_grouped[cols[:2]].abs().sum().sum() == pytest.approx(0.0)
+    # 全体排名时它们照样参与
+    assert xsmom_weights(px)[cols[:2]].abs().sum().sum() > 0
+
+
+def test_xsmom_risk_adjusted_ranking_does_not_let_vol_dominate():
+    """跨资产类别比原始收益，两端会被高波动品种长期霸占；先除波动才可比。"""
+    from qis.strategy.xsmom import xsmom_signals
+    idx = pd.date_range("2020-01-01", periods=500, freq="B")
+    rng = np.random.default_rng(13)
+    # LOUD 波动是其他标的的 10 倍，但漂移相同
+    data = {f"Q{i}": 100 * np.cumprod(1 + rng.normal(0.0002, 0.005, 500)) for i in range(5)}
+    data["LOUD"] = 100 * np.cumprod(1 + rng.normal(0.0002, 0.05, 500))
+    px = pd.DataFrame(data, index=idx)
+    raw = xsmom_signals(px, risk_adjusted=False).iloc[300:]["LOUD"].abs().mean()
+    adj = xsmom_signals(px, risk_adjusted=True).iloc[300:]["LOUD"].abs().mean()
+    assert adj < raw

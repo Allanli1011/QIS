@@ -47,7 +47,7 @@ def _build_parser() -> argparse.ArgumentParser:
     r.add_argument("--start", default=None, help="回测起始日（默认取 settings）")
     r.add_argument("--end", default=None)
     r.add_argument("--vol-target", type=float, default=None, help="组合波动目标（默认取 settings）")
-    r.add_argument("--gross", type=float, default=1.0, help="策略毛敞口")
+    r.add_argument("--gross", type=float, default=None, help="策略毛敞口（默认取 settings）")
     r.add_argument("--no-cost", action="store_true", help="不计交易成本")
     r.add_argument("--band", type=float, default=None, help="无交易带阈值（默认取 settings 的 rebal_band）")
     r.add_argument("--attrib", action="store_true", help="输出分标的年化盈亏贡献")
@@ -151,7 +151,9 @@ def _raw_strategy_weights(name: str, prices: pd.DataFrame, u: Universe,
     if name == "trend":
         return trend_weights(prices, gross=gross)
     if name == "xsmom":
-        return xsmom_weights(prices, groups=u.asset_classes(), gross=gross)
+        # 不按资产类别分组：本池的类别太小（rates/crypto 各 2 个会被整组置零），
+        # 组内排名支撑不起截面动量，靠的是全池广度。见 strategy/xsmom.py。
+        return xsmom_weights(prices, gross=gross)
     if name == "carry":
         # 信号用原始近/远月价差（水平关系），波动估计用调整后收益
         legs = u.carry_legs()
@@ -178,6 +180,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     start = args.start or bt["start"]
     end = args.end or bt.get("end")
     vol_target = args.vol_target if args.vol_target is not None else bt["vol_target"]
+    gross = args.gross if args.gross is not None else bt.get("gross", 1.0)
 
     u = Universe.from_yaml(args.universe)
     store = DataStore()
@@ -190,7 +193,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # 信号、波动目标、无交易带全部在**完整历史**上计算，最后才切到回测窗口。
     # 先切窗口会让 start 之后的第一年被 lookback 预热吃掉
     # （trend 需 252 日，从 2010 起的回测里 2010 全年空仓）。
-    w_raw = _strategy_weights(args.strategy, full, u, store, args.gross)
+    w_raw = _strategy_weights(args.strategy, full, u, store, gross)
     band = args.band if args.band is not None else bt.get("rebal_band", 0.0)
     rets_full = to_returns(full)
     max_lev = float(bt.get("max_leverage", 3.0))

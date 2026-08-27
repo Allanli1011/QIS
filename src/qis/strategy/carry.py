@@ -24,8 +24,13 @@ from qis.portfolio.risk import ewma_vol
 def carry_raw(front: pd.DataFrame, deferred: pd.DataFrame) -> pd.DataFrame:
     """原始 carry = front/deferred - 1（无腿的标的列保持 NaN）。"""
     common = [c for c in front.columns if c in deferred.columns]
-    # 并集日历下两条腿的假期未必同一天，先各自前值填充，避免价差被打成 NaN
-    return ffill_prices(front[common]) / ffill_prices(deferred[common]) - 1.0
+    f, d = front[common], deferred[common]
+    # 只在**两腿同日都有真实报价**时计价差。两腿各自 ffill 再相除是错的：
+    # 它们的停牌日未必重合（SILVER 有 30.6% 的日子不一致），
+    # 那样会把"旧的 c1 / 新的 c2"凑成一个价差，凭空造出期限结构变动
+    # ——实测价差的日变动被放大 32%，而 carry 信号对这种噪声极其敏感。
+    spread = (f / d - 1.0).where(f.notna() & d.notna())
+    return ffill_prices(spread)
 
 
 def carry_signals(
@@ -34,6 +39,7 @@ def carry_signals(
     groups: dict[str, str] | None = None,
     mode: str = "ts",
     lookback: int = 252,
+    smooth: int = 21,
 ) -> pd.DataFrame:
     """
     carry 信号。
@@ -44,6 +50,12 @@ def carry_signals(
       mode="xs": 截面模式——组内去均值（多 carry 高者、空 carry 低者）。
     """
     raw = carry_raw(front, deferred)
+    if smooth > 1:
+        # 先平滑价差再取信号。c1/c2 的日度测量噪声（非同步收盘、买卖价跳动）
+        # 会让"carry 高"往往只是 c1 当天被推高了、次日回落，
+        # 策略于是系统性追高：实测 corr(信噪比, IC) = −0.53，
+        # 高噪声组 IC −0.040 而低噪声组 −0.008。平滑直接打掉这个机制。
+        raw = raw.rolling(smooth, min_periods=max(2, smooth // 2)).mean()
 
     if mode == "ts":
         demeaned = raw - raw.rolling(lookback, min_periods=lookback // 2).mean()
@@ -77,10 +89,12 @@ def carry_weights(
     groups: dict[str, str] | None = None,
     mode: str = "ts",
     lookback: int = 252,
+    smooth: int = 21,
     vol_span: int = 40,
     gross: float = 1.0,
 ) -> pd.DataFrame:
-    sig = carry_signals(front, deferred, groups=groups, mode=mode, lookback=lookback)
+    sig = carry_signals(front, deferred, groups=groups, mode=mode,
+                        lookback=lookback, smooth=smooth)
     vol = ewma_vol(to_returns(front), span=vol_span)
     w = inverse_vol(sig, vol, gross=gross)
     # 无 carry 腿的标的权重保持 0

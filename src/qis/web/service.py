@@ -169,7 +169,7 @@ class QISService:
     # ---------------- 回测 ----------------
     def run(self, strategy: str, start: Optional[str] = None,
             end: Optional[str] = None, vol_target: Optional[float] = None,
-            gross: float = 1.0, classes: Optional[tuple[str, ...]] = None,
+            gross: Optional[float] = None, classes: Optional[tuple[str, ...]] = None,
             with_cost: bool = True, band: Optional[float] = None) -> dict:
         if strategy not in STRATEGIES:
             raise ValueError(f"unknown strategy: {strategy}")
@@ -179,6 +179,7 @@ class QISService:
         bt = self.settings["backtest"]
         start = start or bt["start"]
         vol_target = vol_target if vol_target is not None else bt["vol_target"]
+        gross = gross if gross is not None else bt.get("gross", 1.0)
 
         full = self.prices()
         mask_full = self.roll_mask()

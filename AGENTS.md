@@ -24,6 +24,12 @@ QIS 日频策略研究回测平台。uv 管理，Python 3.13，src layout（`src
 - 信号/波动目标/无交易带都在**完整历史**上算，`start` 只在最后切片时生效，
   否则回测窗口的第一年会被 lookback 预热吃掉。
 - 策略 = 纯函数 `prices -> weights`，输出前 `normalize_gross`；组合级缩放走 `portfolio/construction.py`。
+- xsmom 默认**全池排名 + 风险调整**，不要改回按资产类别分组：本池类别太小
+  （rates/crypto 各 2 个会被整组置零），组内排名撑不起截面动量。
+- carry 的 `c1/c2` 价差必须**两腿同日都有真实报价**才计（见 `carry_raw`），
+  且默认平滑 21 日——这个信号对日度测量噪声极其敏感。
+- 调参前先看 README「策略表现的三个已知成因」：收益低首先是 `gross` 没放大
+  （波动目标够不着），不是信号问题。
 - 新标的加在 `config/universe.yaml`；期货标的尽量配 `carry_leg`（远月 RIC），
   供换月调整与 carry 策略使用。
 - 改动 `config/*.yaml` 结构或模块职责时，同步更新 README 的架构说明。
