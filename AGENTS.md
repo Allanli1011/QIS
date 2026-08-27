@@ -11,6 +11,7 @@ QIS 日频策略研究回测平台。uv 管理，Python 3.13，src layout（`src
 - 回测：`uv run qis run --strategy {trend|xsmom|carry} [--attrib] [--no-cost]`
 - 前端：`uv run qis serve`（FastAPI + `src/qis/web/static/` 单页应用，ECharts 已 vendor 在 static/vendor/）
 - 扩品种：`uv run python scripts/expand_universe.py`（候选 RIC 逐条验证后才入库，禁止凭记忆写 RIC）
+- 样本外验证：`uv run python scripts/walkforward.py`（逐年重选配置，只统计次年收益）
 - 视觉回归：`uv run python scripts/screenshot.py`（需服务已启动 + dev 依赖 playwright）
 - 环境：`uv sync`；加依赖用 `uv add` / `uv add --dev`
 
@@ -39,6 +40,11 @@ QIS 日频策略研究回测平台。uv 管理，Python 3.13，src layout（`src
   供换月调整与 carry 策略使用。
 - 改动 `config/*.yaml` 结构或模块职责时，同步更新 README 的架构说明。
 - `data/*.parquet` 与 `reports/` 不入库。
+
+- 报告策略表现时请一并给出样本外数字：全样本 Sharpe 带着选择偏差
+  （本池实测 trend 0.13、xsmom 0.28、合成 0.21）。新增策略/改参数后重跑 walkforward。
+- 已验证无效、不要重复尝试的方向见 README「策略表现」一节：
+  carry（4 种口径）、value（2 种价格 × 5 个回看期）、短期反转（7 个窗口）。
 
 ## 数据源注意
 

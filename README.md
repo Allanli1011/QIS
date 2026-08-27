@@ -18,6 +18,7 @@ uv run qis serve                       # 启动 Web 研究终端 http://127.0.0.
 uv run qis run --strategy trend        # CLI 回测：trend / xsmom / carry
 uv run qis run --strategy carry --attrib   # 附分标的盈亏归因
 uv run qis report --returns reports/trend_returns.csv   # 重新生成 tearsheet
+uv run python scripts/walkforward.py   # 样本外验证（逐年重选配置）
 uv run pytest                          # 测试
 ```
 
@@ -51,6 +52,8 @@ src/qis/
   cli.py            qis 命令行（fetch-data / run / report / serve）
 scripts/
   expand_universe.py 候选 RIC 验证 + 全量拉取 + 重写 universe.yaml
+  fetch_curve.py    拉取多月合约曲线 c3..cN（carry 用）
+  walkforward.py    Walk-forward 样本外验证
   screenshot.py     Playwright 截图（视觉回归）
 notebooks/          研究示例
 tests/              pytest（引擎/指标/成本/缓存/换月/策略/Web API）
@@ -217,6 +220,53 @@ c3/c4 更薄），所以实现里按可用月份数取舍：≥4 个月用 (2,3,
 保留下来的是**诊断而不是策略行为**：`/api/run` 与 `construction.factor_exposure`
 现在会报告组合的 carry 因子暴露，`neutralize_factor` 作为可选工具提供
 （默认不启用，docstring 里附了上面这张按区间的证据表）。
+
+### ⑤ 样本外验证：报告值里有多少是选择偏差
+
+回测里报出的 Sharpe 是在**看过全样本之后**选定的配置上算的。
+`scripts/walkforward.py` 把研究过程中做过的每一个选择都放进候选集
+（trend 的信号构造与 5 组快慢对、xsmom 的回看期与排名口径，共 22 个配置），
+每年末只用当时已有的数据重选，只统计次年收益：
+
+| | 全样本（交付值） | 样本外（WF） | 选择偏差 |
+|---|---:|---:|---:|
+| trend | +0.98 | **+0.85** | 0.13 |
+| xsmom | +0.79 | **+0.51** | 0.28 |
+| 等权合成 | +0.96 | **+0.75** | 0.21 |
+
+合成的样本外表现：年化 **+6.2%**，最大回撤 −17.7%，12 年里 **9 年为正**。
+
+**xsmom 的选择偏差约为 trend 的两倍**，原因很具体：xsmom 的回看期（252）是
+看着数据定的，而 trend 的快慢阶梯用的是 CTA 惯例（1:3 几何序列）、没拿数据挑。
+这也是为什么 walk-forward 有 7/12 年选了 `ewmac_1to4`（1:4 比例）而不是交付的
+`ewmac_std`——但两者都落在那个 +0.69~+1.01 的平台里，所以交付值保持惯例配置不动。
+
+**做研究时请以样本外那一列为准**：这个平台上能指望的是 Sharpe ≈ 0.75 的合成组合，
+不是 0.96。
+
+### ⑥ 找不相关的正信号：试过 value 与短期反转，都失败
+
+trend 与 xsmom 相关 0.725（本质都是动量），组合缺一个不相关的**正**信号。
+按标准做法试了两类，都不成立：
+
+*Value（长周期反转，AMP2013 的期货 value 定义）.* 相关性确实很低
+（与 trend 0.03、与 xsmom 0.12，结构上是理想的分散化来源），但自身 Sharpe 为负：
+
+    回看期      3年     4年     5年     6年     7年
+    调整后指数  +0.28  −0.26  −0.41  −0.58  −0.27
+    价格水平    +0.16  −0.28  −0.50  −0.39  −0.27
+
+只有最短的 3 年为正，其余全负——**刀刃不是平台**，是噪声不是信号。
+（也验证过方法论假设：换月调整后的总收益指数会把累积 roll yield 混进"跌幅"，
+所以额外用未复权的近月价格水平重算了一遍，两种口径同样的形状。）
+
+*短期反转.* 1~42 日各窗口费前就是负的，1 日的 +0.02 基本是零而换手 2312/年。
+顺带更正一条旧说法：README 早先称无交易带之所以有用是因为日频微调
+"系统性地对短期反转做反向交易"——修完引擎后这不成立，
+带的作用就是省成本，没有反转 alpha 可言。
+
+**结论：这个池子这段样本里，动量是唯一 work 的东西。** carry（4 种口径）、
+value（2 种价格 × 5 个回看期）、短期反转（7 个窗口）全部失败。
 
 ### 关于合成
 
