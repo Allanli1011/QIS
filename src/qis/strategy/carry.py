@@ -1,0 +1,89 @@
+# -*- coding: utf-8 -*-
+"""
+期限结构 carry。
+
+原始 carry_i = front_i / deferred_i - 1（backwardation 为正）。
+不同资产的结构性升贴水差异大（股指/债券长期 contango），部分标的
+（天然气、农产品）价差的季节性强，因此默认用时序模式：
+信号 = 自身价差 − 其滚动均值（见 carry_signals 的 mode 参数）。
+
+输入为两个价格矩阵：
+  front    : date × instrument 近月连续价（列名 = 标的名）
+  deferred : date × instrument 远月连续价（与 front 同列名，缺腿标的可缺列）
+  groups   : instrument → 组名；None 表示全体一组（仅 mode="xs" 使用）
+"""
+from __future__ import annotations
+
+import pandas as pd
+
+from qis.portfolio.construction import inverse_vol, normalize_gross
+from qis.portfolio.risk import ewma_vol
+
+
+def carry_raw(front: pd.DataFrame, deferred: pd.DataFrame) -> pd.DataFrame:
+    """原始 carry = front/deferred - 1（无腿的标的列保持 NaN）。"""
+    common = [c for c in front.columns if c in deferred.columns]
+    return front[common] / deferred[common] - 1.0
+
+
+def carry_signals(
+    front: pd.DataFrame,
+    deferred: pd.DataFrame,
+    groups: dict[str, str] | None = None,
+    mode: str = "ts",
+    lookback: int = 252,
+) -> pd.DataFrame:
+    """
+    carry 信号。
+
+      mode="ts": 时序模式（默认）——自身价差减其 lookback 日滚动均值。
+                 剔除结构性升贴水（股指/债券长期 contango → 信号≈0），
+                 也避免组内极端标的（如天然气的季节性）污染同组其他标的。
+      mode="xs": 截面模式——组内去均值（多 carry 高者、空 carry 低者）。
+    """
+    raw = carry_raw(front, deferred)
+
+    if mode == "ts":
+        demeaned = raw - raw.rolling(lookback, min_periods=lookback // 2).mean()
+    elif mode == "xs":
+        def _demean(df: pd.DataFrame) -> pd.DataFrame:
+            n = df.notna().sum(axis=1)
+            sig = df.sub(df.mean(axis=1), axis=0)
+            return sig.where(n >= 2, 0.0)
+
+        if groups is None:
+            demeaned = _demean(raw)
+        else:
+            demeaned = pd.DataFrame(index=raw.index, columns=raw.columns, dtype=float)
+            members: dict[str, list[str]] = {}
+            for inst, g in groups.items():
+                if inst in raw.columns:
+                    members.setdefault(g, []).append(inst)
+            for cols in members.values():
+                demeaned[cols] = _demean(raw[cols])
+    else:
+        raise ValueError(f"unknown mode: {mode}")
+
+    out = pd.DataFrame(0.0, index=front.index, columns=front.columns)
+    out[demeaned.columns] = demeaned.fillna(0.0)
+    return out
+
+
+def carry_weights(
+    front: pd.DataFrame,
+    deferred: pd.DataFrame,
+    groups: dict[str, str] | None = None,
+    mode: str = "ts",
+    lookback: int = 252,
+    vol_span: int = 40,
+    gross: float = 1.0,
+) -> pd.DataFrame:
+    sig = carry_signals(front, deferred, groups=groups, mode=mode, lookback=lookback)
+    vol = ewma_vol(front.pct_change(fill_method=None), span=vol_span)
+    w = inverse_vol(sig, vol, gross=gross)
+    # 无 carry 腿的标的权重保持 0
+    no_leg = [c for c in front.columns if c not in deferred.columns]
+    if no_leg:
+        w[no_leg] = 0.0
+        w = normalize_gross(w, gross)
+    return w

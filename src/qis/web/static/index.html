@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QIS Terminal</title>
+<link rel="stylesheet" href="/static/css/app.css">
+<script src="/static/vendor/echarts.min.js"></script>
+</head>
+<body>
+<div id="app">
+  <!-- 顶栏 -->
+  <header id="topbar">
+    <div class="tb-logo">QIS<span>TERMINAL</span></div>
+    <nav id="nav">
+      <button class="nav-item active" data-page="overview"><em>OV</em>总览</button>
+      <button class="nav-item" data-page="strategy"><em>BT</em>策略回测</button>
+      <button class="nav-item" data-page="universe"><em>UN</em>标的池</button>
+      <button class="nav-item" data-page="data"><em>DA</em>数据状态</button>
+    </nav>
+    <div class="tb-right">
+      <span class="tb-conn"><span class="conn-dot" id="conn-dot"></span><span id="conn-text">…</span></span>
+      <span class="tb-date mono" id="tb-date"></span>
+      <span class="tb-clock mono" id="tb-clock"></span>
+    </div>
+  </header>
+
+  <!-- 行情滚动带 -->
+  <div id="ticker-wrap"><div id="ticker"></div></div>
+
+  <!-- 主区域 -->
+  <main id="main">
+    <!-- 总览 -->
+    <section class="page active" id="page-overview">
+      <div class="panel">
+        <div class="panel-title">系统概况 <span class="panel-sub" id="overview-sub">加载中…</span></div>
+        <div class="kpi-strip" id="stat-row"></div>
+      </div>
+      <div class="section-title">策略看板 · 默认参数 · 费后</div>
+      <div class="strategy-cards" id="strategy-cards"></div>
+      <div class="panel" style="margin-top:14px">
+        <div class="panel-title">资产分布 <span class="panel-sub">标的数量（按资产类别）</span></div>
+        <div class="panel-chart" id="ov-class-chart" style="height:250px"></div>
+      </div>
+    </section>
+
+    <!-- 策略回测 -->
+    <section class="page" id="page-strategy">
+      <div class="panel">
+        <div class="panel-title">回测参数 <span class="panel-sub" id="run-status"></span></div>
+        <div class="control-bar">
+          <div class="seg" id="ctl-strategy">
+            <button class="seg-btn active" data-value="trend">趋势</button>
+            <button class="seg-btn" data-value="xsmom">截面动量</button>
+            <button class="seg-btn" data-value="carry">Carry</button>
+          </div>
+          <div class="ctl-group">
+            <label>资产类别</label>
+            <div class="chips" id="ctl-classes"></div>
+          </div>
+          <div class="ctl-group">
+            <label>波动目标 <span class="mono amber" id="ctl-vt-label">10%</span></label>
+            <input type="range" id="ctl-vt" min="2" max="25" value="10" step="1">
+          </div>
+          <div class="ctl-group">
+            <label>调仓带 <span class="mono amber" id="ctl-band-label">3%</span></label>
+            <input type="range" id="ctl-band" min="0" max="5" value="3" step="1">
+          </div>
+          <div class="ctl-group">
+            <label>起始日</label>
+            <input type="date" id="ctl-start" value="2010-01-01">
+          </div>
+          <div class="ctl-group">
+            <label class="switch-label">成本
+              <span class="switch"><input type="checkbox" id="ctl-cost" checked><span class="slider"></span></span>
+            </label>
+          </div>
+          <button class="btn-primary" id="ctl-run">运行 ▸</button>
+        </div>
+      </div>
+      <div class="metric-strip" id="metric-strip"></div>
+      <div class="panel">
+        <div class="panel-title" id="equity-title">净值曲线</div>
+        <div class="panel-chart tall" id="ch-equity"></div>
+      </div>
+      <div class="grid-2">
+        <div class="panel"><div class="panel-title">回撤</div><div class="panel-chart" id="ch-dd"></div></div>
+        <div class="panel"><div class="panel-title">滚动 252 日 Sharpe</div><div class="panel-chart" id="ch-roll"></div></div>
+        <div class="panel"><div class="panel-title">月度收益</div><div class="panel-chart" id="ch-monthly"></div></div>
+        <div class="panel"><div class="panel-title">分标的年化贡献</div><div class="panel-chart" id="ch-attrib"></div></div>
+        <div class="panel"><div class="panel-title">毛敞口（按资产类别）</div><div class="panel-chart" id="ch-classw"></div></div>
+        <div class="panel"><div class="panel-title">当前持仓 TOP15</div><div class="panel-chart" id="ch-lastw"></div></div>
+      </div>
+    </section>
+
+    <!-- 标的池 -->
+    <section class="page" id="page-universe">
+      <div class="panel">
+        <div class="panel-title">标的池 <span class="panel-sub" id="universe-sub"></span></div>
+        <div class="control-bar">
+          <input type="search" id="u-search" placeholder="搜索名称 / RIC…" class="search-input">
+          <div class="chips" id="u-classes"></div>
+        </div>
+        <div class="table-wrap"><table id="u-table">
+          <thead><tr>
+            <th>名称</th><th>RIC</th><th>类别</th><th class="num">最新</th>
+            <th class="num">1日</th><th class="num">1月</th><th class="num">1年</th><th>近一年</th>
+          </tr></thead>
+          <tbody id="u-tbody"></tbody>
+        </table></div>
+      </div>
+    </section>
+
+    <!-- 数据状态 -->
+    <section class="page" id="page-data">
+      <div class="panel">
+        <div class="panel-title">数据状态 <span class="panel-sub">本地 parquet 缓存 · qis fetch-data 增量更新</span></div>
+        <div class="table-wrap"><table id="d-table">
+          <thead><tr><th>RIC</th><th class="num">行数</th><th>起始</th><th>最新</th><th>新鲜度</th></tr></thead>
+          <tbody id="d-tbody"></tbody>
+        </table></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- 底栏 -->
+  <footer id="statusbar">
+    <span>QIS TERMINAL v0.1 · LSEG WORKSPACE · PARQUET CACHE</span>
+    <span id="status-msg">READY</span>
+  </footer>
+</div>
+
+<!-- 标的详情抽屉 -->
+<div id="drawer" class="drawer">
+  <div class="drawer-mask" id="drawer-mask"></div>
+  <div class="drawer-body">
+    <div class="panel" style="height:100%">
+      <div class="panel-title">
+        <span id="drawer-title"></span> <span class="panel-sub" id="drawer-sub"></span>
+        <button class="drawer-close" id="drawer-close">×</button>
+      </div>
+      <div class="panel-chart" id="ch-inst" style="height:420px"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>

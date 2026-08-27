@@ -1,0 +1,102 @@
+# QIS 标的池（RIC 均经 LSEG 验证）
+# ric: LSEG RIC（连续合约 c1/c2）；asset_class: 对应 settings.yaml 的 cost_bps；
+# carry_leg: 可选，carry 策略远月腿 + 换月调整
+instruments:
+  - { name: ASX200, ric: YAPc1, asset_class: equity_index, carry_leg: YAPc2 }
+  - { name: BOVESPA, ric: INDc1, asset_class: equity_index }
+  - { name: CAC40, ric: FCEc1, asset_class: equity_index, carry_leg: FCEc2 }
+  - { name: DAX, ric: FDXc1, asset_class: equity_index, carry_leg: FDXc2 }
+  - { name: DOW, ric: YMc1, asset_class: equity_index, carry_leg: YMc2 }
+  - { name: ESTX50, ric: STXEc1, asset_class: equity_index, carry_leg: STXEc2 }
+  - { name: FTSE100, ric: FFIc1, asset_class: equity_index, carry_leg: FFIc2 }
+  - { name: HSCEI, ric: HCEIc1, asset_class: equity_index, carry_leg: HCEIc2 }
+  - { name: HSI, ric: HSIc1, asset_class: equity_index, carry_leg: HSIc2 }
+  - { name: KOSPI, ric: KSc1, asset_class: equity_index, carry_leg: KSc2 }
+  - { name: NASDAQ, ric: NQc1, asset_class: equity_index, carry_leg: NQc2 }
+  - { name: NIKKEI, ric: NIYc1, asset_class: equity_index }
+  - { name: RUSSELL, ric: RTYc1, asset_class: equity_index, carry_leg: RTYc2 }
+  - { name: SMI, ric: FSMIc1, asset_class: equity_index, carry_leg: FSMIc2 }
+  - { name: SP500, ric: ESc1, asset_class: equity_index, carry_leg: ESc2 }
+  - { name: TOPIX, ric: JTIc1, asset_class: equity_index, carry_leg: JTIc2 }
+  - { name: TSX60, ric: SXFc1, asset_class: equity_index }
+  - { name: VIX, ric: VXc1, asset_class: equity_index, carry_leg: VXc2 }
+  - { name: AUS10, ric: YTCc1, asset_class: bond, carry_leg: YTCc2 }
+  - { name: BOBL, ric: FGBMc1, asset_class: bond, carry_leg: FGBMc2 }
+  - { name: BTP, ric: FBTPc1, asset_class: bond, carry_leg: FBTPc2 }
+  - { name: BUND, ric: FGBLc1, asset_class: bond, carry_leg: FGBLc2 }
+  - { name: BUXL, ric: FGBXc1, asset_class: bond, carry_leg: FGBXc2 }
+  - { name: CAN10, ric: CGBc1, asset_class: bond, carry_leg: CGBc2 }
+  - { name: GILT, ric: FLGc1, asset_class: bond, carry_leg: FLGc2 }
+  - { name: JGB10, ric: JGBc1, asset_class: bond, carry_leg: JGBc2 }
+  - { name: OAT, ric: FOATc1, asset_class: bond, carry_leg: FOATc2 }
+  - { name: SCHATZ, ric: FGBSc1, asset_class: bond, carry_leg: FGBSc2 }
+  - { name: UST10, ric: TYc1, asset_class: bond, carry_leg: TYc2 }
+  - { name: UST2, ric: TUc1, asset_class: bond, carry_leg: TUc2 }
+  - { name: UST30, ric: USc1, asset_class: bond, carry_leg: USc2 }
+  - { name: UST5, ric: FVc1, asset_class: bond, carry_leg: FVc2 }
+  - { name: AUDUSD, ric: AUD=, asset_class: fx }
+  - { name: EURUSD, ric: EUR=, asset_class: fx }
+  - { name: GBPUSD, ric: GBP=, asset_class: fx }
+  - { name: NZDUSD, ric: NZD=, asset_class: fx }
+  - { name: USDBRL, ric: BRL=, asset_class: fx }
+  - { name: USDCAD, ric: CAD=, asset_class: fx }
+  - { name: USDCHF, ric: CHF=, asset_class: fx }
+  - { name: USDCLP, ric: CLP=, asset_class: fx }
+  - { name: USDCNH, ric: CNH=, asset_class: fx }
+  - { name: USDCOP, ric: COP=, asset_class: fx }
+  - { name: USDCZK, ric: CZK=, asset_class: fx }
+  - { name: USDDKK, ric: DKK=, asset_class: fx }
+  - { name: USDHUF, ric: HUF=, asset_class: fx }
+  - { name: USDIDR, ric: IDR=, asset_class: fx }
+  - { name: USDILS, ric: ILS=, asset_class: fx }
+  - { name: USDINR, ric: INR=, asset_class: fx }
+  - { name: USDJPY, ric: JPY=, asset_class: fx }
+  - { name: USDKRW, ric: KRW=, asset_class: fx }
+  - { name: USDMXN, ric: MXN=, asset_class: fx }
+  - { name: USDMYR, ric: MYR=, asset_class: fx }
+  - { name: USDNOK, ric: NOK=, asset_class: fx }
+  - { name: USDPHP, ric: PHP=, asset_class: fx }
+  - { name: USDPLN, ric: PLN=, asset_class: fx }
+  - { name: USDRUB, ric: RUB=, asset_class: fx }
+  - { name: USDSEK, ric: SEK=, asset_class: fx }
+  - { name: USDSGD, ric: SGD=, asset_class: fx }
+  - { name: USDTHB, ric: THB=, asset_class: fx }
+  - { name: USDTRY, ric: TRY=, asset_class: fx }
+  - { name: USDTWD, ric: TWD=, asset_class: fx }
+  - { name: USDZAR, ric: ZAR=, asset_class: fx }
+  - { name: BRENT, ric: LCOc1, asset_class: energy, carry_leg: LCOc2 }
+  - { name: COAL, ric: ATWMc1, asset_class: energy, carry_leg: ATWMc2 }
+  - { name: GASOIL, ric: LGOc1, asset_class: energy, carry_leg: LGOc2 }
+  - { name: HEATOIL, ric: HOc1, asset_class: energy, carry_leg: HOc2 }
+  - { name: NATGAS, ric: NGc1, asset_class: energy, carry_leg: NGc2 }
+  - { name: RBOB, ric: RBc1, asset_class: energy, carry_leg: RBc2 }
+  - { name: TTF, ric: TRNLTTFMc1, asset_class: energy, carry_leg: TRNLTTFMc2 }
+  - { name: WTI, ric: CLc1, asset_class: energy, carry_leg: CLc2 }
+  - { name: COPPER, ric: HGc1, asset_class: metal, carry_leg: HGc2 }
+  - { name: GOLD, ric: GCc1, asset_class: metal, carry_leg: GCc2 }
+  - { name: IRONORE, ric: SZZFc1, asset_class: metal, carry_leg: SZZFc2 }
+  - { name: PALLADIUM, ric: XPD=, asset_class: metal }
+  - { name: PLATINUM, ric: XPT=, asset_class: metal }
+  - { name: SILVER, ric: SIc1, asset_class: metal, carry_leg: SIc2 }
+  - { name: CANOLA, ric: RSc1, asset_class: ags, carry_leg: RSc2 }
+  - { name: COCOA, ric: CCc1, asset_class: ags, carry_leg: CCc2 }
+  - { name: COFFEE, ric: KCc1, asset_class: ags, carry_leg: KCc2 }
+  - { name: CORN, ric: Cc1, asset_class: ags, carry_leg: Cc2 }
+  - { name: COTTON, ric: CTc1, asset_class: ags, carry_leg: CTc2 }
+  - { name: FEEDERCATTLE, ric: FCc1, asset_class: ags, carry_leg: FCc2 }
+  - { name: KCWHEAT, ric: KWc1, asset_class: ags, carry_leg: KWc2 }
+  - { name: LEANHOGS, ric: LHc1, asset_class: ags, carry_leg: LHc2 }
+  - { name: LIVECATTLE, ric: LCc1, asset_class: ags, carry_leg: LCc2 }
+  - { name: OATS, ric: Oc1, asset_class: ags, carry_leg: Oc2 }
+  - { name: OJ, ric: OJc1, asset_class: ags, carry_leg: OJc2 }
+  - { name: PALMOIL, ric: FCPOc1, asset_class: ags, carry_leg: FCPOc2 }
+  - { name: ROUGHRICE, ric: RRc1, asset_class: ags, carry_leg: RRc2 }
+  - { name: SOYBEAN, ric: Sc1, asset_class: ags, carry_leg: Sc2 }
+  - { name: SOYMEAL, ric: SMc1, asset_class: ags, carry_leg: SMc2 }
+  - { name: SOYOIL, ric: BOc1, asset_class: ags, carry_leg: BOc2 }
+  - { name: SUGAR, ric: SBc1, asset_class: ags, carry_leg: SBc2 }
+  - { name: WHEAT, ric: Wc1, asset_class: ags, carry_leg: Wc2 }
+  - { name: EURIBOR, ric: FEIc1, asset_class: rates, carry_leg: FEIc2 }
+  - { name: SOFR3M, ric: SRAc1, asset_class: rates, carry_leg: SRAc2 }
+  - { name: BTC, ric: BTCc1, asset_class: crypto, carry_leg: BTCc2 }
+  - { name: ETH, ric: ETHc1, asset_class: crypto, carry_leg: ETHc2 }

@@ -1,0 +1,20 @@
+# 回测默认参数
+backtest:
+  start: "2010-01-01"     # 回测起始日
+  end: null               # null = 至今
+  vol_target: 0.10        # 组合年化波动目标
+  vol_lookback: 40        # EWMA 波动估计 span（交易日）
+  rebal_band: 0.03        # 无交易带：偏离 <3% 不调仓（降换手、避免日频微调损耗）
+  ann_factor: 252         # 年化因子
+
+# 单边交易成本（bps，按资产类别；default 兜底）
+cost_bps:
+  default: 1.0
+  equity_index: 0.5
+  bond: 0.5
+  fx: 0.5
+  energy: 1.5
+  metal: 1.0
+  ags: 2.0
+  rates: 0.5
+  crypto: 2.0
